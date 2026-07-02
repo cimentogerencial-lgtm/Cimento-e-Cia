@@ -3,11 +3,11 @@ window.CIMENTO_FIREBASE = {
   syncEnabled: true,
   documentPath: "empresas/cimento-e-cia",
   config: {
-    apiKey: "AIzaSyBC8NoWumL9GTAk6VbI5OvUHuOSiuPsQOQ",
-    authDomain: "cimentoecia-81eb5.firebaseapp.com",
-    projectId: "cimentoecia-81eb5",
-    storageBucket: "cimentoecia-81eb5.firebasestorage.app",
-    messagingSenderId: "644163736860",
-    appId: "1:644163736860:web:0607decefe2ec1e80a56d9"
+    apiKey: "AIzaSyBGvvs1AI8OiGYlCuv9mw4vNosuvIMvUZc",
+    authDomain: "cimento-e-cia.firebaseapp.com",
+    projectId: "cimento-e-cia",
+    storageBucket: "cimento-e-cia.firebasestorage.app",
+    messagingSenderId: "8271173238",
+    appId: "1:8271173238:web:7169e090b8eb853bb4b157"
   }
 };

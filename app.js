@@ -42,7 +42,7 @@ let firebaseReady = false;
 let currentSessionUser = null;
 let lastCloudError = "";
 const stockLocations = ["Divinopolis", "Arcos"];
-const cloudChunkSize = 300000;
+const cloudChunkSize = 120000;
 
 function makeEmptyLocations() {
   return stockLocations.reduce((locations, location) => {
@@ -152,6 +152,7 @@ const state = {
   stockEntries: [],
   movements: []
 };
+const emptyStateTemplate = JSON.parse(JSON.stringify(state));
 
 const customerBatchImportVersion = "clientes-7-planilhas-2026-06-23-v2";
 const freightRatesImportVersion = "fretes-entrega-retorno-2026-06-22-v1";
@@ -482,7 +483,7 @@ function saveState() {
 function saveStateToCloud() {
   if (!cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return;
   window.clearTimeout(cloudSaveTimer);
-  cloudSaveTimer = window.setTimeout(saveStateToCloudNow, 50);
+  cloudSaveTimer = window.setTimeout(saveStateToCloudNow, 1500);
 }
 
 function cloudSafeState() {
@@ -559,13 +560,15 @@ async function writeCloudState(extra = {}) {
   for (let index = chunks.length; index < cloudChunkCount; index += 1) {
     batch.delete(cloudChunkDoc(index));
   }
+  const deleteOldInlineState = window.firebase?.firestore?.FieldValue?.delete;
   batch.set(cloudDocRef, {
     ...extra,
     updatedAt: new Date().toISOString(),
     stateFormat: "chunks-v1",
     chunkCount: chunks.length,
     stateSize: stateJson.length,
-    revision
+    revision,
+    ...(deleteOldInlineState ? { state: deleteOldInlineState() } : {})
   }, { merge: true });
   await batch.commit();
   cloudChunkCount = chunks.length;
@@ -585,25 +588,13 @@ function mergeArrayByKey(baseItems, localItems, keyFn) {
   return merged;
 }
 
-function applyCloudStateWithLocalBackup(cloudState, localState) {
-  Object.assign(state, cloudState || {});
-  if (!localState) return;
-
-  state.customers = mergeArrayByKey(state.customers, localState.customers, (item) => cleanDocument(item.document));
-  state.stock = mergeArrayByKey(state.stock, localState.stock, (item) => item.id || `${normalizeSearch(item.name)}|${normalizeSearch(item.factory)}`);
-  state.orders = mergeArrayByKey(state.orders, localState.orders, (item) => item.id);
-  state.receivables = mergeArrayByKey(state.receivables, localState.receivables, (item) => item.id);
-  state.notes = mergeArrayByKey(state.notes, localState.notes, (item) => `${item.number}|${normalizeSearch(item.supplier)}`);
-  state.stockEntries = mergeArrayByKey(state.stockEntries, localState.stockEntries, (item) => item.id || `${item.invoice}|${normalizeSearch(item.product)}|${item.quantity}|${item.date}`);
-  state.movements = mergeArrayByKey(state.movements, localState.movements, (item) => item.id || `${item.document}|${item.date}|${item.type}|${item.qty || item.quantity}`);
-  state.deletedOrders = mergeArrayByKey(state.deletedOrders, localState.deletedOrders, (item) => `${item.id}|${item.deletedAt || ""}`);
-  state.products = mergeArrayByKey(state.products, localState.products, (item) => item.id || `${normalizeSearch(item.name)}|${normalizeSearch(item.factory)}`);
-  state.paymentMethods = mergeArrayByKey(state.paymentMethods, localState.paymentMethods, (item) => normalizeSearch(item));
-  state.paymentTerms = mergeArrayByKey(state.paymentTerms, localState.paymentTerms, (item) => normalizeSearch(item));
-  state.paymentRules = mergeArrayByKey(state.paymentRules, localState.paymentRules, (item) => item.id || `${item.type}|${normalizeSearch(item.reference)}|${normalizeSearch(item.payment)}|${normalizeSearch(item.term)}`);
-  state.salespeople = mergeArrayByKey(state.salespeople, localState.salespeople, (item) => normalizeSearch(item));
-  state.sellerCities = mergeArrayByKey(state.sellerCities, localState.sellerCities, (item) => item.id || `${normalizeSearch(item.city)}|${normalizeSearch(item.salesperson)}`);
-  state.freightRates = mergeArrayByKey(state.freightRates, localState.freightRates, (item) => item.id || `${item.type}|${normalizeSearch(item.city)}`);
+function applyCloudStateWithLocalBackup(cloudState, _localState) {
+  Object.keys(state).forEach((key) => delete state[key]);
+  Object.assign(
+    state,
+    JSON.parse(JSON.stringify(emptyStateTemplate)),
+    cloudState || {}
+  );
 }
 
 async function saveStateToCloudNow() {
@@ -649,16 +640,14 @@ async function initFirebaseSync() {
       return;
     }
 
-    const localStateBeforeCloud = JSON.parse(JSON.stringify(state));
     cloudLoading = true;
     const cloudStateResult = await readCloudState();
     if (cloudStateResult.exists && cloudStateResult.state) {
       applyingCloudState = true;
-      applyCloudStateWithLocalBackup(cloudStateResult.state, localStateBeforeCloud);
+      applyCloudStateWithLocalBackup(cloudStateResult.state);
       localStorage.setItem("cimentoGestorState", JSON.stringify(state));
       renderAll();
       applyingCloudState = false;
-      await writeCloudState();
       showToast(`Dados online carregados. ${state.notes.length} notas importadas.`);
     } else {
       await writeCloudState({ createdAt: new Date().toISOString() });
@@ -672,8 +661,7 @@ async function initFirebaseSync() {
       const liveCloudState = await readCloudStateFromSnapshot(liveSnapshot);
       if (!liveCloudState.state) return;
       applyingCloudState = true;
-      const localStateBeforeLiveCloud = JSON.parse(JSON.stringify(state));
-      applyCloudStateWithLocalBackup(liveCloudState.state, localStateBeforeLiveCloud);
+      applyCloudStateWithLocalBackup(liveCloudState.state);
       localStorage.setItem("cimentoGestorState", JSON.stringify(state));
       renderAll();
       applyingCloudState = false;
