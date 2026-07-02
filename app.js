@@ -4802,8 +4802,14 @@ function normalizeCustomerFormInput(event) {
   const input = event.target.closest('[name="name"], [name="address"]');
   if (!input) return;
   const cursor = input.selectionStart;
-  input.value = plainCustomerText(input.value);
-  input.setSelectionRange(cursor, cursor);
+  const normalized = String(input.value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+  if (input.value === normalized) return;
+  input.value = normalized;
+  const nextCursor = Math.min(cursor || normalized.length, normalized.length);
+  input.setSelectionRange(nextCursor, nextCursor);
 }
 
 function clearCustomers() {
@@ -7045,6 +7051,10 @@ function bindEvents() {
     activeCustomerSearch = qs("#customers-search").value.trim();
     renderCustomers();
   });
+  const renderCustomersDebounced = debounce(() => {
+    activeCustomerSearch = qs("#customers-search").value.trim();
+    renderCustomers();
+  }, 700);
   ["#customers-search", "#customers-city-filter"].forEach((selector) => {
     qs(selector).addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
@@ -7052,10 +7062,7 @@ function bindEvents() {
       activeCustomerSearch = qs("#customers-search").value.trim();
       renderCustomers();
     });
-    qs(selector).addEventListener("input", () => {
-      activeCustomerSearch = qs("#customers-search").value.trim();
-      renderCustomers();
-    });
+    qs(selector).addEventListener("input", renderCustomersDebounced);
   });
   qs("#customers-seller-filter").addEventListener("change", renderCustomers);
   qs("#clear-customers-search").addEventListener("click", () => {
