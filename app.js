@@ -2248,6 +2248,12 @@ function findStockProductForOrderItem(item) {
     || state.stock.find((product) => normalizeSearch(product.product) === normalizeSearch(item.product));
 }
 
+function findStockProductForEntry(entry) {
+  if (!entry) return null;
+  return state.stock.find((product) => normalizeSearch(product.product) === normalizeSearch(entry.product))
+    || state.stock.find((product) => product.id === entry.productId);
+}
+
 function hasStockForOrderItems(items, location) {
   const requestedByProduct = new Map();
   items.forEach((item) => {
@@ -5615,11 +5621,21 @@ function applyLastPrice() {
   if (dateLabel) dateLabel.textContent = lastOrder?.date ? lastOrder.date.split("-").reverse().join("/") : "Sem historico";
 }
 
+function setSaleProductLocked(locked = false) {
+  const productInput = qs("#sale-product");
+  if (!productInput) return;
+  productInput.disabled = Boolean(locked);
+  productInput.title = locked
+    ? "Produto bloqueado porque este pedido esta vinculado a nota fiscal."
+    : "";
+}
+
 function showDirectLoadInfo(invoice = "", factoryOrder = "", entry = null) {
   const panel = qs("#direct-load-info");
   if (!panel) return;
   const hasDirectLoad = Boolean(invoice || factoryOrder);
   panel.hidden = !hasDirectLoad;
+  setSaleProductLocked(hasDirectLoad);
   qs("#direct-load-invoice").value = invoice || "Nao informado";
   qs("#direct-load-factory-order").value = factoryOrder || "Nao informado";
   const distributionButton = qs("#enable-load-distribution");
@@ -5674,8 +5690,10 @@ function directLoadGroupedItems() {
       const input = qs(`[data-direct-item-price="${CSS.escape(entry.id)}"]`);
       const qty = Math.min(Number(qtyInput?.value || 0), remaining);
       const price = Number(input?.value || 0);
+      const product = findStockProductForEntry(entry);
       return {
         sourceEntryId: entry.id,
+        productId: product?.id || "",
         product: entry.product,
         qty,
         price,
@@ -5719,6 +5737,7 @@ function resetSaleForm() {
   sourceEntryGroupForOrderIds = [];
   qs("#sale-form").reset();
   qs("#customer-search").value = "";
+  setSaleProductLocked(false);
   qs('[name="price"]').value = "38.90";
   qs('[name="quantity"]').removeAttribute("max");
   qs("#sale-stock-location").disabled = false;
@@ -5756,6 +5775,7 @@ function startEditOrder(orderId) {
   qs("#customer-address").value = order.address || "";
   qs("#customer-phone").value = order.phone || "";
   qs("#sale-product").value = order.productId;
+  setSaleProductLocked(Boolean(order.directLoad || order.sourceEntryId));
   qs("#sale-stock-location").disabled = Boolean(order.directLoad || order.sourceEntryId);
   qs("#sale-stock-location").value = stockLocations.includes(order.stockLocation) ? order.stockLocation : "Divinopolis";
   qs('[name="salesperson"]').value = order.salesperson || "Edmilson";
@@ -5804,7 +5824,7 @@ function handleSale(event) {
     return;
   }
   const data = new FormData(event.currentTarget);
-  const product = state.stock.find((item) => item.id === data.get("product"));
+  let product = state.stock.find((item) => item.id === data.get("product"));
   let qty = Number(data.get("quantity"));
   const price = Number(data.get("price"));
   const documentValue = cleanDocument(data.get("document"));
@@ -5817,6 +5837,8 @@ function handleSale(event) {
     : editingOrder?.sourceEntryId
       ? state.stockEntries.find((entry) => entry.id === editingOrder.sourceEntryId)
       : null;
+  const sourceEntryProduct = findStockProductForEntry(sourceEntry);
+  if (sourceEntryProduct) product = sourceEntryProduct;
   const isDirectLoad = Boolean(sourceEntry || editingOrder?.directLoad);
   const stockLocation = isDirectLoad ? "" : normalizeLocation(data.get("stockLocation"));
   const stockQtyBeforeOrder = isDirectLoad ? null : productAvailableQty(product, stockLocation);
@@ -6570,6 +6592,7 @@ function createDirectOrderFromEntry(entryId) {
   setSaleExtraItemsVisible(false);
   qs('[data-view="pedidos"]').click();
   qs("#sale-product").value = product.id;
+  setSaleProductLocked(true);
   qs("#sale-stock-location").value = "Divinopolis";
   qs("#sale-stock-location").disabled = true;
   qs('[name="driver"]').value = cleanDriverName(entry.loadedBy) || "";
@@ -6582,6 +6605,7 @@ function createDirectOrderFromEntry(entryId) {
   showDirectLoadInfo(entry.invoice || "", entry.factoryOrder || "", entry);
   renderSaleProductOptions();
   qs("#sale-product").value = product.id;
+  setSaleProductLocked(true);
   qs("#sale-form").scrollIntoView({ behavior: "smooth", block: "start" });
   showToast(`Pedido aberto como carga direta. Saldo disponivel: ${formatQty(remaining)}.`);
 }
@@ -6610,6 +6634,7 @@ function createDirectOrderFromEntryGroup(entryIdsValue) {
   setSaleExtraItemsVisible(false);
   qs('[data-view="pedidos"]').click();
   qs("#sale-product").value = firstProduct.id;
+  setSaleProductLocked(true);
   qs("#sale-stock-location").value = "Divinopolis";
   qs("#sale-stock-location").disabled = true;
   qs('[name="driver"]').value = cleanDriverName(firstEntry.loadedBy) || "";
@@ -6624,6 +6649,7 @@ function createDirectOrderFromEntryGroup(entryIdsValue) {
   updateDirectLoadItemTotals();
   renderSaleProductOptions();
   qs("#sale-product").value = firstProduct.id;
+  setSaleProductLocked(true);
   qs("#sale-form").scrollIntoView({ behavior: "smooth", block: "start" });
   showToast(`Pedido unico aberto com ${entries.length} produto(s). Saldo total: ${formatQty(totalRemaining)}.`);
 }
