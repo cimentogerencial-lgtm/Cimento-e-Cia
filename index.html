@@ -425,7 +425,7 @@
 
       <section class="view" id="pedidos">
         <div class="order-stack">
-          <form class="panel form-panel sale-form-panel" id="sale-form">
+          <form class="panel form-panel sale-form-panel" id="sale-form" novalidate>
             <div class="panel-head">
               <h2 id="sale-form-title">Novo pedido de venda</h2>
               <span class="tag" id="sale-edit-tag">Novo</span>
@@ -511,6 +511,9 @@
               <label>Forma de pagamento
                 <select name="payment" id="sale-payment"></select>
               </label>
+              <label>Prazo
+                <input name="paymentTerm" id="sale-payment-term" placeholder="Prazo do pedido" readonly />
+              </label>
               <p class="search-status" id="sale-payment-rule-status"></p>
               <label>Observação
                 <textarea name="observation" id="sale-observation" rows="3" placeholder="Observação interna do pedido"></textarea>
@@ -542,6 +545,7 @@
                 <button class="secondary-btn" id="enable-load-distribution" type="button">Distribuir carga</button>
                 <span id="direct-load-distribution-status">O pedido utilizara todo o saldo da nota.</span>
               </div>
+              <div class="direct-load-distribution-ledger" id="direct-load-distribution-ledger" hidden></div>
             </div>
             <div class="form-actions">
               <button class="primary-btn" id="sale-submit-btn" type="submit">Salvar pedido</button>
@@ -826,7 +830,6 @@
                 <th>Data pagamento</th>
                 <th class="right">Saldo</th>
                 <th>Status</th>
-                <th>Faturamento</th>
                 <th>Recebimento</th>
               </tr>
             </thead>
@@ -838,7 +841,7 @@
                 <th class="right" id="finance-paid-total">R$ 0,00</th>
                 <th></th>
                 <th class="right" id="finance-balance-total">R$ 0,00</th>
-                <th colspan="3"></th>
+                <th colspan="2"></th>
               </tr>
             </tfoot>
           </table>

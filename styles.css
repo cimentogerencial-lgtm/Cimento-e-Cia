@@ -1259,32 +1259,30 @@ th {
 
 #financeiro .finance-receivables-table th,
 #financeiro .finance-receivables-table td {
-  padding: 10px 5px;
-  font-size: 1rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  padding: 10px 6px;
+  font-size: 0.96rem;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 #financeiro .finance-receivables-table th {
-  white-space: nowrap;
   line-height: 1.15;
-  font-size: 0.88rem;
+  font-size: 0.84rem;
 }
 
-#financeiro .finance-receivables-table thead th:nth-child(1) { width: 7%; }
+#financeiro .finance-receivables-table thead th:nth-child(1) { width: 9%; }
 #financeiro .finance-receivables-table thead th:nth-child(2) { width: 7%; }
-#financeiro .finance-receivables-table thead th:nth-child(3) { width: 20%; }
-#financeiro .finance-receivables-table thead th:nth-child(4) { width: 8%; }
-#financeiro .finance-receivables-table thead th:nth-child(5) { width: 8%; }
-#financeiro .finance-receivables-table thead th:nth-child(6) { width: 7%; }
-#financeiro .finance-receivables-table thead th:nth-child(7) { width: 10%; }
-#financeiro .finance-receivables-table thead th:nth-child(8) { width: 7%; }
-#financeiro .finance-receivables-table thead th:nth-child(9) { width: 6%; }
+#financeiro .finance-receivables-table thead th:nth-child(3) { width: 18%; }
+#financeiro .finance-receivables-table thead th:nth-child(4) { width: 10%; }
+#financeiro .finance-receivables-table thead th:nth-child(5) { width: 10%; }
+#financeiro .finance-receivables-table thead th:nth-child(6) { width: 10%; }
+#financeiro .finance-receivables-table thead th:nth-child(7) { width: 11%; }
+#financeiro .finance-receivables-table thead th:nth-child(8) { width: 10%; }
+#financeiro .finance-receivables-table thead th:nth-child(9) { width: 7%; }
 #financeiro .finance-receivables-table thead th:nth-child(10) { width: 8%; }
-#financeiro .finance-receivables-table thead th:nth-child(11) { width: 12%; }
 
 #financeiro .finance-receivables-table td:nth-child(3) {
-  white-space: nowrap;
   line-height: 1.25;
 }
 
@@ -1636,6 +1634,38 @@ th {
 .direct-load-distribution-control span {
   color: var(--muted);
   font-weight: 700;
+}
+
+.direct-load-distribution-ledger {
+  grid-column: 1 / -1;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.direct-load-distribution-ledger table {
+  margin-top: 8px;
+}
+
+.direct-load-distribution-ledger th,
+.direct-load-distribution-ledger td {
+  font-size: 0.86rem;
+}
+
+.direct-load-distribution-summary {
+  color: var(--muted);
+  font-weight: 800;
+  margin-top: 4px;
+}
+
+.direct-load-distribution-guidance {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--brand-dark);
+  font-weight: 800;
 }
 
 .form-actions {

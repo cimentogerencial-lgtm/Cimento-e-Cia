@@ -1208,9 +1208,20 @@ function customerAddressWithoutCity(customer) {
   return withoutCep || customer?.address || "-";
 }
 
+function normalizeSalespersonName(name) {
+  const typedName = plainCustomerText(name || "");
+  if (!typedName) return "";
+  return state.salespeople.find((seller) => normalizeSearch(seller) === normalizeSearch(typedName)) || "";
+}
+
 function linkedCustomerSalesperson(customer) {
   if (!customer) return state.salespeople[0] || "";
-  if (state.salespeople.includes(customer.salesperson)) return customer.salesperson;
+
+  // 1) Primeiro respeita o vendedor salvo no cadastro do cliente.
+  const customerSalesperson = normalizeSalespersonName(customer.salesperson);
+  if (customerSalesperson) return customerSalesperson;
+
+  // 2) Se o cliente não tiver vendedor cadastrado, aplica a regra por cidade/UF.
   const city = normalizeSearch(customerCityText(customer));
   const uf = normalizeSearch(customer.uf || customer.state || "");
   const address = normalizeSearch(customer.address || "");
@@ -1221,11 +1232,47 @@ function linkedCustomerSalesperson(customer) {
     const ufMatches = !item.uf || !uf || normalizeSearch(item.uf) === uf || address.includes(normalizeSearch(item.uf));
     return cityMatches && ufMatches;
   });
-  return rule?.salesperson || "";
+  return normalizeSalespersonName(rule?.salesperson) || "";
 }
 
 function resolveCustomerSalesperson(customer) {
   return linkedCustomerSalesperson(customer) || state.salespeople[0] || "";
+}
+
+function currentSaleCustomerForSalesperson() {
+  const documentValue = qs("#customer-document")?.value || "";
+  const searchValue = qs("#customer-search")?.value || "";
+  const nameValue = qs("#customer-name")?.value || "";
+  const savedCustomer = findCustomer(documentValue)
+    || findCustomerByTerm(searchValue)
+    || findCustomerByTerm(nameValue);
+  if (savedCustomer) return savedCustomer;
+  return {
+    document: cleanDocument(documentValue),
+    name: nameValue,
+    address: qs("#customer-address")?.value || "",
+    phone: qs("#customer-phone")?.value || "",
+    salesperson: ""
+  };
+}
+
+function applySaleSalesperson(customer = null) {
+  const salespersonSelect = qs('[name="salesperson"]');
+  if (!salespersonSelect) return "";
+  const sourceCustomer = customer || currentSaleCustomerForSalesperson();
+  const linkedSalesperson = linkedCustomerSalesperson(sourceCustomer);
+  const resolvedSalesperson = linkedSalesperson || state.salespeople[0] || "";
+
+  // Garante que as opções existam antes de selecionar o vendedor.
+  if (!salespersonSelect.options.length) {
+    salespersonSelect.innerHTML = salespersonOptions(resolvedSalesperson);
+  }
+
+  const normalizedSalesperson = normalizeSalespersonName(resolvedSalesperson) || state.salespeople[0] || "";
+  salespersonSelect.value = normalizedSalesperson;
+  salespersonSelect.disabled = true;
+  salespersonSelect.dataset.lockedValue = normalizedSalesperson;
+  return normalizedSalesperson;
 }
 
 function paymentRuleLabel(rule) {
@@ -1257,6 +1304,7 @@ function applyPaymentRuleForCustomer(customer) {
   const salesperson = linkedCustomerSalesperson(customer) || qs('[name="salesperson"]')?.value || state.salespeople[0] || "";
   const rule = resolvePaymentRule(customer, salesperson);
   const paymentSelect = qs('[name="payment"]');
+  const paymentTermInput = qs("#sale-payment-term");
   if (!paymentSelect) return null;
   if (rule) {
     if (!state.paymentMethods.includes(rule.payment)) {
@@ -1267,12 +1315,14 @@ function applyPaymentRuleForCustomer(customer) {
     paymentSelect.disabled = true;
     paymentSelect.dataset.term = rule.term || "";
     paymentSelect.dataset.rule = paymentRuleLabel(rule);
+    if (paymentTermInput) paymentTermInput.value = rule.term || "";
     const status = qs("#sale-payment-rule-status");
     if (status) status.textContent = `Regra aplicada: ${paymentRuleLabel(rule)} | ${rule.payment} | prazo ${rule.term}`;
   } else {
     paymentSelect.disabled = false;
     paymentSelect.dataset.term = "";
     paymentSelect.dataset.rule = "";
+    if (paymentTermInput) paymentTermInput.value = "";
     const status = qs("#sale-payment-rule-status");
     if (status) status.textContent = "";
   }
@@ -2637,6 +2687,14 @@ function renderStockEntryGroupDestinations(entries) {
   `;
 }
 
+function renderStockUnitButtons(entry) {
+  return stockLocations.map((location) => `
+    <button class="print-btn" type="button" data-stock-entry-unit="${entry.id}:${location}">
+      Enviar saldo para ${location}
+    </button>
+  `).join("");
+}
+
 function renderStockEntryGroupActions(entries) {
   const pending = entries.filter((entry) => entryRemainingQuantity(entry) > 0.009);
   if (!pending.length) return `<span class="status ok">Distribuição concluida</span>`;
@@ -2650,6 +2708,12 @@ function renderStockEntryGroupActions(entries) {
             Criar pedido
           </button>
         </div>
+        ${pending.map((entry) => `
+          <div class="entry-action-line">
+            <strong>${entry.product}</strong>
+            <span class="tag">Saldo ${formatQty(entryRemainingQuantity(entry))}</span>
+          </div>
+        `).join("")}
       </div>
     `;
   }
@@ -3374,7 +3438,6 @@ function renderReceivables() {
       <td>${item.paymentDate ? item.paymentDate.split("-").reverse().join("/") : "-"}</td>
       <td class="right"><strong>${money.format(balance)}</strong></td>
       <td><span class="status ${statusClass(item.status)}">${item.status}</span></td>
-      <td>${isBoletoPayment ? `<span class="status ${item.billingStatus === "Faturado" ? "ok" : "warn"}">${item.billingStatus || "Nao faturado"}</span>` : "-"}</td>
       <td class="right">
         <div class="finance-pay-control">
           ${!isSettled
@@ -5567,11 +5630,9 @@ function fillCustomer(customer) {
   qs("#customer-name").value = customer.name || "";
   qs("#customer-address").value = customer.address || "";
   qs("#customer-phone").value = customer.phone || "";
-  const linkedSalesperson = linkedCustomerSalesperson(customer);
-  const resolvedSalesperson = linkedSalesperson || state.salespeople[0] || "";
-  qs('[name="salesperson"]').value = resolvedSalesperson;
-  qs('[name="salesperson"]').disabled = Boolean(linkedSalesperson);
+  applySaleSalesperson(customer);
   applyPaymentRuleForCustomer(customer);
+  updateDirectLoadDestinationMode();
   const results = qs("#customer-search-results");
   if (results) {
     results.hidden = true;
@@ -5656,6 +5717,255 @@ function setSaleProductLocked(locked = false) {
     : "";
 }
 
+
+function saleCustomerHasDestination() {
+  const documentValue = cleanDocument(qs("#customer-document")?.value || "");
+  const customerName = String(qs("#customer-name")?.value || "").trim();
+  // Para distribuicao de carga, o campo de busca pode ficar com texto antigo.
+  // O destino deve ser considerado cliente somente quando CPF/CNPJ ou nome estiverem preenchidos.
+  return Boolean(documentValue || customerName);
+}
+
+function directLoadStockDestination() {
+  const hasDirectLoad = !qs("#direct-load-info")?.hidden;
+  const distributionActive = Boolean(sourceEntryDistributionEnabled
+    || currentDirectLoadEntries().some((entry) => entry.distributionStarted));
+  if (!hasDirectLoad || !distributionActive) return "";
+  if (saleCustomerHasDestination()) return "";
+  const location = normalizeLocation(qs("#sale-stock-location")?.value || "Divinopolis");
+  return stockLocations.includes(location) ? location : "Divinopolis";
+}
+
+function directLoadIsStockDestination() {
+  return Boolean(directLoadStockDestination());
+}
+
+function currentDirectLoadEntries(entry = null) {
+  const grouped = sourceEntryGroupForOrderIds
+    .map((entryId) => state.stockEntries.find((item) => item.id === entryId))
+    .filter(Boolean);
+  if (grouped.length) return grouped;
+  if (entry) return [entry];
+  if (sourceEntryForOrderId) {
+    const sourceEntry = state.stockEntries.find((item) => item.id === sourceEntryForOrderId);
+    return sourceEntry ? [sourceEntry] : [];
+  }
+  return [];
+}
+
+function renderDirectLoadDistributionLedger(entries = []) {
+  const container = qs("#direct-load-distribution-ledger");
+  if (!container) return;
+  const validEntries = entries.filter(Boolean);
+  if (!validEntries.length) {
+    container.hidden = true;
+    container.innerHTML = "";
+    return;
+  }
+  const rows = [];
+  validEntries.forEach((entry) => {
+    entryAllocations(entry).forEach((allocation) => {
+      if (allocation.type === "stock") {
+        rows.push({
+          product: entry.product,
+          destination: `Estoque ${allocation.location || "-"}`,
+          qty: allocation.qty
+        });
+        return;
+      }
+      const order = state.orders.find((item) => item.id === allocation.orderId);
+      rows.push({
+        product: entry.product,
+        destination: `${allocation.orderId || "Pedido"} - ${order?.customer || allocation.customer || "Cliente"}`,
+        qty: allocation.qty
+      });
+    });
+  });
+  const totalQty = validEntries.reduce((sum, entry) => sum + Number(entry.quantity || 0), 0);
+  const allocatedQty = validEntries.reduce((sum, entry) => sum + entryAllocatedQuantity(entry), 0);
+  const remainingQty = validEntries.reduce((sum, entry) => sum + entryRemainingQuantity(entry), 0);
+  const rowsHtml = rows.length
+    ? rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.product || "-")}</td>
+          <td>${escapeHtml(row.destination || "-")}</td>
+          <td class="right">${formatQty(row.qty)}</td>
+        </tr>
+      `).join("")
+    : `<tr><td colspan="3">Nenhuma parte salva ainda.</td></tr>`;
+
+  container.hidden = false;
+  container.innerHTML = `
+    <strong>Distribuicao da nota</strong>
+    <div class="direct-load-distribution-summary">
+      Total da nota: ${formatQty(totalQty)} |
+      Salvo: ${formatQty(allocatedQty)} |
+      Saldo restante: ${formatQty(remainingQty)}
+    </div>
+    ${rows.length && remainingQty > 0.009 ? `
+      <div class="direct-load-distribution-guidance">
+        Parte salva. Informe o proximo cliente ou deixe o cliente em branco para enviar o saldo para Arcos/Divinopolis.
+      </div>
+    ` : ""}
+    <table>
+      <thead>
+        <tr>
+          <th>Produto</th>
+          <th>Destino salvo</th>
+          <th>Quantidade</th>
+        </tr>
+      </thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  `;
+}
+
+function setFieldRequired(selector, required) {
+  const field = qs(selector);
+  if (field) field.required = Boolean(required);
+}
+
+function setFieldLabelVisible(selector, visible) {
+  const field = qs(selector);
+  const label = field?.closest("label");
+  if (label) label.hidden = !visible;
+}
+
+function updateDirectLoadDestinationMode() {
+  const hasDirectLoad = !qs("#direct-load-info")?.hidden;
+  const distributionActive = Boolean(sourceEntryDistributionEnabled
+    || currentDirectLoadEntries().some((entry) => entry.distributionStarted));
+  const stockLocation = hasDirectLoad && distributionActive ? directLoadStockDestination() : "";
+  const isStock = Boolean(stockLocation);
+  const customerSection = qs(".sale-customer-section");
+  if (customerSection) customerSection.hidden = isStock && !distributionActive;
+  setFieldLabelVisible('[name="price"]', !isStock);
+  setFieldLabelVisible('[name="payment"]', !isStock);
+  setFieldLabelVisible('[name="salesperson"]', !isStock);
+  setFieldLabelVisible('[name="driver"]', !isStock);
+  qs("#toggle-freight-return")?.toggleAttribute("hidden", isStock);
+  qs(".last-sale-info")?.toggleAttribute("hidden", isStock);
+  setFieldRequired('[name="document"]', !isStock);
+  setFieldRequired('[name="customer"]', !isStock);
+  setFieldRequired('[name="salesperson"]', !isStock);
+  setFieldRequired('[name="price"]', !isStock);
+  const priceInput = qs('[name="price"]');
+  if (priceInput) {
+    priceInput.disabled = isStock;
+    if (isStock) priceInput.value = "0.00";
+  }
+  const paymentInput = qs('[name="payment"]');
+  if (paymentInput) paymentInput.disabled = isStock;
+  const salespersonInput = qs('[name="salesperson"]');
+  if (salespersonInput && isStock) salespersonInput.disabled = true;
+  const stockSelect = qs("#sale-stock-location");
+  if (stockSelect) {
+    if (hasDirectLoad && distributionActive) {
+      stockSelect.disabled = !isStock;
+      stockSelect.title = isStock
+        ? "Selecione a unidade que recebera o saldo da carga."
+        : "Unidade bloqueada porque esta parte esta destinada a cliente.";
+    } else if (hasDirectLoad) {
+      stockSelect.disabled = true;
+      stockSelect.title = "Unidade bloqueada em carga direta sem distribuicao.";
+    } else {
+      stockSelect.disabled = false;
+      stockSelect.title = "";
+    }
+    if (isStock) stockSelect.value = stockLocation;
+  }
+  const submit = qs("#sale-submit-btn");
+  if (submit && hasDirectLoad && !editingOrderId) {
+    submit.textContent = distributionActive ? "Salvar parte" : "Salvar pedido vinculado";
+  }
+}
+
+function sendDirectLoadQuantityToStock(stockLocation, qty) {
+  const sourceEntry = sourceEntryForOrderId
+    ? state.stockEntries.find((entry) => entry.id === sourceEntryForOrderId)
+    : null;
+  const sourceEntryGroup = sourceEntryGroupForOrderIds
+    .map((entryId) => state.stockEntries.find((entry) => entry.id === entryId))
+    .filter(Boolean);
+  const entries = sourceEntryGroup.length ? sourceEntryGroup : sourceEntry ? [sourceEntry] : [];
+  if (!entries.length) {
+    showToast("Nota vinculada nao encontrada.");
+    return false;
+  }
+  const allocationItems = sourceEntryGroup.length > 1 ? directLoadGroupedItems() : [];
+  const totalAvailable = entries.reduce((sum, entry) => sum + entryRemainingQuantity(entry), 0);
+  if (!qty || qty <= 0) {
+    showToast("Informe uma quantidade maior que zero.");
+    return false;
+  }
+  if (!sourceEntryGroup.length && qty > totalAvailable + 0.009) {
+    showToast(`Quantidade maior que o saldo disponivel da nota: ${formatQty(totalAvailable)}.`);
+    return false;
+  }
+  if (allocationItems.length && allocationItems.some((item) => !item.qty || item.qty <= 0)) {
+    showToast("Informe a quantidade de cada produto que vai para o estoque.");
+    return false;
+  }
+  const allocations = allocationItems.length
+    ? allocationItems.map((item) => ({ entry: entries.find((entry) => entry.id === item.sourceEntryId), qty: item.qty }))
+    : [{ entry: entries[0], qty: Math.min(qty, entryRemainingQuantity(entries[0])) }];
+
+  for (const item of allocations) {
+    if (!item.entry || item.qty <= 0) continue;
+    if (item.qty > entryRemainingQuantity(item.entry) + 0.009) {
+      showToast(`Quantidade maior que o saldo disponivel para ${item.entry.product}: ${formatQty(entryRemainingQuantity(item.entry))}.`);
+      return false;
+    }
+  }
+
+  allocations.forEach((item) => {
+    if (!item.entry || item.qty <= 0.009) return;
+    beginEntryDistribution(item.entry);
+    const allocationId = `ALOC-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+    let product = findStockProductForEntry(item.entry) || state.stock.find((stockItem) => normalizeSearch(stockItem.product) === normalizeSearch(item.entry.product));
+    if (!product) product = ensureStockProduct(item.entry.product, item.entry.supplier || item.entry.brand || "Fornecedor importado", item.entry.invoice);
+    changeProductLocationQty(product, stockLocation, item.qty);
+    entryAllocations(item.entry).push({
+      id: allocationId,
+      type: "stock",
+      location: stockLocation,
+      qty: item.qty,
+      sourceEntryId: item.entry.id,
+      sourceInvoice: item.entry.invoice || "",
+      sourceFactoryOrder: item.entry.factoryOrder || "",
+      product: item.entry.product || "",
+      supplier: item.entry.supplier || "",
+      createdAt: new Date().toISOString()
+    });
+    state.movements.unshift({
+      date: today,
+      op: `Distribuicao NF ${item.entry.invoice} para estoque ${stockLocation}`,
+      product: item.entry.product,
+      qty: item.qty,
+      sourceEntryId: item.entry.id,
+      sourceInvoice: item.entry.invoice || "",
+      sourceFactoryOrder: item.entry.factoryOrder || "",
+      allocationId
+    });
+    updateInvoiceDistributionStatus(item.entry);
+  });
+
+  const remainingIds = entries.filter((entry) => entryRemainingQuantity(entry) > 0.009).map((entry) => entry.id);
+  resetSaleForm();
+  saveState();
+  renderAll();
+  if (remainingIds.length > 1) {
+    createDirectOrderFromEntryGroup(remainingIds.join(","));
+    showToast(`Quantidade enviada para ${stockLocation}. Continue distribuindo o saldo restante.`);
+  } else if (remainingIds.length === 1) {
+    createDirectOrderFromEntry(remainingIds[0]);
+    showToast(`Quantidade enviada para ${stockLocation}. Continue distribuindo o saldo restante.`);
+  } else {
+    showToast(`Quantidade enviada para o estoque de ${stockLocation}. Distribuicao concluida.`);
+  }
+  return true;
+}
+
 function showDirectLoadInfo(invoice = "", factoryOrder = "", entry = null) {
   const panel = qs("#direct-load-info");
   if (!panel) return;
@@ -5666,17 +5976,22 @@ function showDirectLoadInfo(invoice = "", factoryOrder = "", entry = null) {
   qs("#direct-load-factory-order").value = factoryOrder || "Nao informado";
   const distributionButton = qs("#enable-load-distribution");
   const distributionStatus = qs("#direct-load-distribution-status");
-  const distributionActive = Boolean(entry?.distributionStarted || sourceEntryDistributionEnabled);
+  const directEntries = currentDirectLoadEntries(entry);
+  const distributionActive = Boolean(sourceEntryDistributionEnabled
+    || directEntries.some((item) => item.distributionStarted));
+  const totalRemaining = directEntries.reduce((sum, item) => sum + entryRemainingQuantity(item), 0);
   if (distributionButton) {
     distributionButton.hidden = !hasDirectLoad;
     distributionButton.disabled = distributionActive;
-    distributionButton.textContent = distributionActive ? "Distribuição ativada" : "Distribuir carga";
+    distributionButton.textContent = distributionActive ? "Distribuicao ativada" : "Distribuir carga";
   }
   if (distributionStatus) {
     distributionStatus.textContent = distributionActive
-      ? `Distribuição ativa. Saldo disponivel: ${formatQty(entry ? entryRemainingQuantity(entry) : 0)}.`
+      ? `Distribuicao ativa. Informe cliente, quantidade e valor; ou deixe cliente em branco e selecione Arcos/Divinopolis para mandar ao estoque. Saldo disponivel: ${formatQty(totalRemaining)}.`
       : "O pedido utilizara todo o saldo restante da nota.";
   }
+  renderDirectLoadDistributionLedger(hasDirectLoad ? directEntries : []);
+  updateDirectLoadDestinationMode();
 }
 
 function renderDirectLoadItems(entries = []) {
@@ -5773,6 +6088,7 @@ function resetSaleForm() {
   qs('[name="payment"]').disabled = false;
   qs('[name="payment"]').dataset.term = "";
   qs('[name="payment"]').dataset.rule = "";
+  qs("#sale-payment-term").value = "";
   qs("#sale-payment-rule-status").textContent = "";
   qs("#sale-form-title").textContent = "Novo pedido de venda";
   qs("#sale-edit-tag").textContent = "Novo";
@@ -5785,6 +6101,7 @@ function resetSaleForm() {
   setSaleExtraItemsVisible(true);
   showDirectLoadInfo();
   renderDirectLoadItems();
+  updateDirectLoadDestinationMode();
 }
 
 function startEditOrder(orderId) {
@@ -5824,6 +6141,7 @@ function startEditOrder(orderId) {
   qs('[name="payment"]').value = order.payment || "Boleto";
   qs('[name="payment"]').disabled = Boolean(order.paymentTerm);
   qs('[name="payment"]').dataset.term = order.paymentTerm || "";
+  qs("#sale-payment-term").value = order.paymentTerm || "";
   qs('[name="observation"]').value = order.observation || "";
   const sourceEntry = state.stockEntries.find((entry) => entry.id === order.sourceEntryId)
     || state.stockEntries.find((entry) => entry.invoice === order.sourceInvoice);
@@ -5853,6 +6171,7 @@ function handleSale(event) {
   let product = state.stock.find((item) => item.id === data.get("product"));
   let qty = Number(data.get("quantity"));
   const price = Number(data.get("price"));
+  const directStockLocation = directLoadStockDestination();
   const documentValue = cleanDocument(data.get("document"));
   const editingOrder = editingOrderId ? state.orders.find((item) => item.id === editingOrderId) : null;
   const sourceEntryGroup = sourceEntryGroupForOrderIds
@@ -5885,8 +6204,12 @@ function handleSale(event) {
   if (groupedDirectItems.length) {
     qty = groupedDirectItems.reduce((sum, item) => sum + item.qty, 0);
   }
-  if (groupedDirectItems.length && groupedDirectItems.some((item) => !item.qty || item.qty <= 0 || !item.price || item.price <= 0)) {
+  if (groupedDirectItems.length && !directStockLocation && groupedDirectItems.some((item) => !item.qty || item.qty <= 0 || !item.price || item.price <= 0)) {
     showToast("Informe a quantidade e o preco unitario de cada produto da nota.");
+    return;
+  }
+  if (groupedDirectItems.length && directStockLocation && groupedDirectItems.some((item) => !item.qty || item.qty <= 0)) {
+    showToast("Informe a quantidade de cada produto que vai para o estoque.");
     return;
   }
   const standardOrderItems = !isDirectLoad ? buildStandardOrderItems(product, qty, price, stockLocation) : [];
@@ -5906,6 +6229,10 @@ function handleSale(event) {
     : 0;
   if (isDirectLoad && sourceEntry && qty > directAvailable + 0.009) {
     showToast(`Quantidade maior que o saldo disponivel da nota: ${formatQty(directAvailable)}.`);
+    return;
+  }
+  if (isDirectLoad && directStockLocation && !editingOrderId) {
+    sendDirectLoadQuantityToStock(directStockLocation, qty);
     return;
   }
   if (isDirectLoad && sourceEntry && !sourceEntryDistributionEnabled
@@ -5941,6 +6268,11 @@ function handleSale(event) {
     qty = standardOrderItems.reduce((sum, item) => sum + item.qty, 0);
   }
 
+  if (!directStockLocation && (!documentValue || !String(data.get("customer") || "").trim())) {
+    showToast("Informe o cliente ou deixe CPF/CNPJ e cliente em branco para enviar para Arcos/Divinopolis.");
+    return;
+  }
+
   const customer = upsertCustomer({
     document: documentValue,
     name: data.get("customer"),
@@ -5959,10 +6291,18 @@ function handleSale(event) {
   } else {
     customer.lastPrices[product.id] = price;
   }
-  const orderSalesperson = linkedCustomerSalesperson(customer) || data.get("salesperson") || state.salespeople[0] || "";
+  const orderSalesperson = applySaleSalesperson(customer) || linkedCustomerSalesperson(customer) || state.salespeople[0] || "";
+  const salespersonField = qs('[name="salesperson"]');
+  if (salespersonField && orderSalesperson) {
+    salespersonField.value = orderSalesperson;
+    salespersonField.dataset.lockedValue = orderSalesperson;
+    salespersonField.disabled = true;
+  }
   const paymentRule = resolvePaymentRule(customer, orderSalesperson);
+  const paymentTermInput = qs("#sale-payment-term");
   const orderPayment = paymentRule?.payment || paymentInput?.value || data.get("payment") || state.paymentMethods[0] || "Boleto";
-  const orderPaymentTerm = paymentRule?.term || paymentInput?.dataset.term || "";
+  const orderPaymentTerm = paymentRule?.term || paymentTermInput?.value || paymentInput?.dataset.term || "";
+  if (paymentTermInput) paymentTermInput.value = orderPaymentTerm || "";
 
   const value = groupedDirectItems.length
     ? groupedDirectItems.reduce((sum, item) => sum + item.value, 0)
@@ -6094,14 +6434,23 @@ function handleSale(event) {
     allocationEntries.forEach((entry) => {
       const allocationQty = groupedItemByEntryId.has(entry.id)
         ? Number(groupedItemByEntryId.get(entry.id).qty || 0)
-        : entryRemainingQuantity(entry);
+        : sourceEntryGroup.length
+          ? entryRemainingQuantity(entry)
+          : Math.min(qty, entryRemainingQuantity(entry));
       if (allocationQty <= 0.009) return;
       beginEntryDistribution(entry);
       entryAllocations(entry).push({
         id: `ALOC-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
         type: "order",
         orderId: id,
-        qty: allocationQty
+        qty: allocationQty,
+        customer: order.customer,
+        customerDoc: order.customerDoc,
+        sourceEntryId: entry.id,
+        sourceInvoice: entry.invoice || "",
+        sourceFactoryOrder: entry.factoryOrder || "",
+        product: entry.product || "",
+        createdAt: new Date().toISOString()
       });
       entry.generatedOrderId = entry.generatedOrderId || id;
       entry.linkedOrderId = entry.linkedOrderId || id;
@@ -6606,7 +6955,8 @@ function createDirectOrderFromEntry(entryId) {
     showToast("A quantidade desta nota ja foi totalmente distribuida.");
     return;
   }
-  const product = state.stock.find((item) => item.product === entry.product);
+  const product = findStockProductForEntry(entry)
+    || state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
   if (!product) {
     showToast("Produto da nota nao encontrado no estoque.");
     return;
@@ -6656,7 +7006,7 @@ function createDirectOrderFromEntryGroup(entryIdsValue) {
   resetSaleForm();
   sourceEntryForOrderId = firstEntry.id;
   sourceEntryGroupForOrderIds = entries.map((entry) => entry.id);
-  sourceEntryDistributionEnabled = false;
+  sourceEntryDistributionEnabled = entries.some((entry) => entry.distributionStarted);
   setSaleExtraItemsVisible(false);
   qs('[data-view="pedidos"]').click();
   qs("#sale-product").value = firstProduct.id;
@@ -6871,6 +7221,25 @@ function printOrder(orderId) {
   printWindow.document.close();
 }
 
+function importedItemQuantityInBags(det) {
+  const rawQuantity = Number(det.querySelector("qCom")?.textContent?.replace(",", ".") || 0);
+  const unit = normalizeSearch(det.querySelector("uCom")?.textContent || det.querySelector("uTrib")?.textContent || "");
+  const productName = det.querySelector("xProd")?.textContent?.trim() || "";
+  if (!Number.isFinite(rawQuantity) || rawQuantity <= 0) return 0;
+
+  // Algumas NF-e de cimento vêm em tonelada. O estoque/pedidos do sistema trabalham em sacos.
+  // Para produtos 50kg: 1 tonelada = 20 sacos. Para 40kg: 1 tonelada = 25 sacos.
+  const kgMatch = productName.match(/(40|50)\s*kg/i);
+  const kgPerBag = kgMatch ? Number(kgMatch[1]) : 50;
+  const bagsPerTon = 1000 / kgPerBag;
+  const isTon = ["ton", "tonelada", "toneladas", "t"].includes(unit);
+  const isBag = ["sc", "saco", "sacos", "un", "und", "unid", "unidade", "unidades"].includes(unit);
+
+  if (isTon) return rawQuantity * bagsPerTon;
+  if (isBag) return rawQuantity;
+  return rawQuantity;
+}
+
 function parseNfeXml(xmlText) {
   const doc = new DOMParser().parseFromString(xmlText, "text/xml");
   const parserError = doc.querySelector("parsererror");
@@ -6879,7 +7248,9 @@ function parseNfeXml(xmlText) {
   const getText = (selector, fallback = "") => doc.querySelector(selector)?.textContent?.trim() || fallback;
   const items = Array.from(doc.querySelectorAll("det")).map((det) => ({
     product: det.querySelector("xProd")?.textContent?.trim() || "Produto sem descricao",
-    quantity: Number(det.querySelector("qCom")?.textContent?.replace(",", ".") || 0),
+    quantity: importedItemQuantityInBags(det),
+    invoiceQuantity: Number(det.querySelector("qCom")?.textContent?.replace(",", ".") || 0),
+    invoiceUnit: det.querySelector("uCom")?.textContent?.trim() || det.querySelector("uTrib")?.textContent?.trim() || "",
     brand: detectBrand(det.querySelector("xProd")?.textContent?.trim() || "", getText("emit xNome", ""))
   })).filter((item) => item.quantity > 0);
   const observation = [
@@ -6941,6 +7312,8 @@ function importNote(xmlText, details = {}) {
       ovNumber,
       product: item.product,
       quantity: item.quantity,
+      invoiceQuantity: item.invoiceQuantity,
+      invoiceUnit: item.invoiceUnit,
       brand: item.brand,
       loadedBy,
       supplier: note.supplier,
@@ -7182,6 +7555,12 @@ function bindEvents() {
       createDirectOrderFromEntryGroup(groupButton.dataset.directOrderGroup);
       return;
     }
+    const unitButton = event.target.closest("[data-stock-entry-unit]");
+    if (unitButton) {
+      const [entryId, location] = unitButton.dataset.stockEntryUnit.split(":");
+      updateStockEntryDestination(entryId, location);
+      return;
+    }
     const button = event.target.closest("[data-direct-order-entry]");
     if (!button) return;
     createDirectOrderFromEntry(button.dataset.directOrderEntry);
@@ -7313,6 +7692,7 @@ function bindEvents() {
   qs("#customer-search").addEventListener("input", debounce(() => {
     const value = qs("#customer-search").value.trim();
     renderCustomerOptions(value);
+    updateDirectLoadDestinationMode();
   }));
   qs("#customer-search").addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
@@ -7335,10 +7715,22 @@ function bindEvents() {
   });
   qs("#customer-document").addEventListener("input", debounce(() => {
     const value = cleanDocument(qs("#customer-document").value);
+    applySaleSalesperson();
+    updateDirectLoadDestinationMode();
     if (value.length === 11 || value.length === 14) {
       qs("#customer-search").value = qs("#customer-document").value;
       lookupCustomer();
     }
+  }));
+  qs("#customer-name").addEventListener("input", debounce(() => {
+    applySaleSalesperson();
+    applyCurrentPaymentRule();
+    updateDirectLoadDestinationMode();
+  }));
+  qs("#customer-address").addEventListener("input", debounce(() => {
+    applySaleSalesperson();
+    applyCurrentPaymentRule();
+    updateDirectLoadDestinationMode();
   }));
   qs("#sale-product").addEventListener("change", applyLastPrice);
   qs("#add-sale-item").addEventListener("click", () => addSaleExtraItem());
@@ -7357,6 +7749,11 @@ function bindEvents() {
   qs('[name="salesperson"]').addEventListener("change", applyCurrentPaymentRule);
   qs("#sale-stock-location").addEventListener("change", () => {
     renderSaleProductOptions();
+    updateDirectLoadDestinationMode();
+  });
+  ["#customer-search", "#customer-document", "#customer-name"].forEach((selector) => {
+    qs(selector)?.addEventListener("input", updateDirectLoadDestinationMode);
+    qs(selector)?.addEventListener("change", updateDirectLoadDestinationMode);
   });
   qs("#orders-table").addEventListener("click", (event) => {
     const stageButton = event.target.closest("[data-stage-order]");
@@ -7778,6 +8175,3 @@ try {
   console.error("Erro ao carregar dados locais:", error);
   showToast("Sistema aberto. Algum lançamento local precisa ser revisado.");
 }
-
-
-
