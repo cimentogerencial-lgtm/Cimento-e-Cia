@@ -2113,11 +2113,19 @@ function renderStock() {
 }
 
 function renderSaleProductOptions() {
+  const productSelect = qs("#sale-product");
+  if (!productSelect) return;
   const saleLocation = normalizeLocation(qs("#sale-stock-location")?.value || "Divinopolis");
-  qs("#sale-product").innerHTML = state.stock.length ? state.stock.map((item) => {
+  const previousValue = productSelect.value;
+  const lockedValue = saleLockedProductId(previousValue);
+  productSelect.innerHTML = state.stock.length ? state.stock.map((item) => {
     syncProductTotal(item);
     return `<option value="${item.id}">${item.product} - ${saleLocation}: ${formatQty(item.locations?.[saleLocation] || 0)}</option>`;
   }).join("") : `<option value="">Nenhum produto cadastrado</option>`;
+  const desiredValue = productSelect.disabled && lockedValue ? lockedValue : previousValue;
+  if (desiredValue && Array.from(productSelect.options).some((option) => option.value === desiredValue)) {
+    productSelect.value = desiredValue;
+  }
   if (qs("#sale-extra-items-table")) {
     syncSaleExtraItemDrafts();
     renderSaleExtraItems();
@@ -2252,6 +2260,24 @@ function findStockProductForEntry(entry) {
   if (!entry) return null;
   return state.stock.find((product) => normalizeSearch(product.product) === normalizeSearch(entry.product))
     || state.stock.find((product) => product.id === entry.productId);
+}
+
+function saleLockedProductId(fallbackId = "") {
+  const directEntryId = sourceEntryForOrderId || sourceEntryGroupForOrderIds[0] || "";
+  const directEntry = directEntryId ? state.stockEntries.find((entry) => entry.id === directEntryId) : null;
+  const directProduct = findStockProductForEntry(directEntry);
+  if (directProduct?.id) return directProduct.id;
+
+  const editingOrder = editingOrderId ? state.orders.find((order) => order.id === editingOrderId) : null;
+  if (editingOrder?.directLoad || editingOrder?.sourceEntryId) {
+    const editingEntry = editingOrder.sourceEntryId
+      ? state.stockEntries.find((entry) => entry.id === editingOrder.sourceEntryId)
+      : null;
+    const editingProduct = findStockProductForEntry(editingEntry);
+    return editingProduct?.id || editingOrder.productId || fallbackId;
+  }
+
+  return fallbackId;
 }
 
 function hasStockForOrderItems(items, location) {
