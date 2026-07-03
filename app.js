@@ -415,6 +415,9 @@ state.stock.forEach((item) => {
   });
   item.qty = stockLocations.reduce((sum, location) => sum + item.locations[location], 0);
 });
+if (cleanupDuplicateImportedStockEntries()) {
+  localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+}
 
 const sampleXml = `<?xml version="1.0" encoding="UTF-8"?>
 <nfeProc>
@@ -595,6 +598,12 @@ function applyCloudStateWithLocalBackup(cloudState, _localState) {
     JSON.parse(JSON.stringify(emptyStateTemplate)),
     cloudState || {}
   );
+  return cleanupDuplicateImportedStockEntries();
+}
+
+function persistCleanedCloudState() {
+  saveState();
+  window.setTimeout(() => saveStateToCloudNow(), 800);
 }
 
 async function saveStateToCloudNow() {
@@ -644,10 +653,11 @@ async function initFirebaseSync() {
     const cloudStateResult = await readCloudState();
     if (cloudStateResult.exists && cloudStateResult.state) {
       applyingCloudState = true;
-      applyCloudStateWithLocalBackup(cloudStateResult.state);
+      const cleanedCloudState = applyCloudStateWithLocalBackup(cloudStateResult.state);
       localStorage.setItem("cimentoGestorState", JSON.stringify(state));
       renderAll();
       applyingCloudState = false;
+      if (cleanedCloudState) persistCleanedCloudState();
       showToast(`Dados online carregados. ${state.notes.length} notas importadas.`);
     } else {
       await writeCloudState({ createdAt: new Date().toISOString() });
@@ -661,10 +671,11 @@ async function initFirebaseSync() {
       const liveCloudState = await readCloudStateFromSnapshot(liveSnapshot);
       if (!liveCloudState.state) return;
       applyingCloudState = true;
-      applyCloudStateWithLocalBackup(liveCloudState.state);
+      const cleanedLiveState = applyCloudStateWithLocalBackup(liveCloudState.state);
       localStorage.setItem("cimentoGestorState", JSON.stringify(state));
       renderAll();
       applyingCloudState = false;
+      if (cleanedLiveState) persistCleanedCloudState();
     }, (error) => {
       console.error("Erro ao sincronizar Firebase:", error);
       lastCloudError = error?.code || error?.message || "erro em tempo real";
@@ -2868,6 +2879,7 @@ function customerMatchesSearch(customer, searchValue) {
 
   const searchable = normalizeSearch([
     customer.name,
+    customer.fantasy,
     customer.address,
     customer.phone,
     formatDocument(customer.document),
@@ -4356,6 +4368,90 @@ function addStock(productName, quantity, factory = "Fornecedor importado", batch
   saveState();
 }
 
+function ensureStockProduct(productName, factory = "Fornecedor importado", batch = "") {
+  const productKey = normalizeSearch(productName);
+  let product = state.stock.find((item) => normalizeSearch(item.product) === productKey);
+  if (!product) {
+    product = {
+      id: makeProductId(productName, factory),
+      product: productName,
+      factory,
+      batch,
+      qty: 0,
+      locations: makeEmptyLocations(),
+      min: 100
+    };
+    state.stock.push(product);
+  } else {
+    product.factory = product.factory || factory;
+    product.batch = product.batch || batch;
+    product.locations = product.locations || makeEmptyLocations();
+    syncProductTotal(product);
+  }
+  return product;
+}
+
+function importedStockDuplicateKey(entry) {
+  if (!entry || entry.movementType || entry.generatedOrderId || entry.linkedOrderId) return "";
+  if (entryAllocations(entry).length) return "";
+  return [
+    cleanDocument(entry.invoice || entry.number || ""),
+    normalizeSearch(entry.supplier || ""),
+    normalizeSearch(entry.product || ""),
+    Number(entry.quantity || 0),
+    entry.date || "",
+    normalizeLocation(entry.location || ""),
+    normalizeSearch(entry.factoryOrder || ""),
+    normalizeSearch(entry.loadedBy || "")
+  ].join("|");
+}
+
+function cleanupDuplicateImportedStockEntries() {
+  if (!Array.isArray(state.stockEntries) || !state.stockEntries.length) return false;
+  const seen = new Set();
+  let changed = false;
+  const cleanedEntries = [];
+
+  state.stockEntries.forEach((entry) => {
+    const duplicateKey = importedStockDuplicateKey(entry);
+    if (!duplicateKey || !seen.has(duplicateKey)) {
+      if (duplicateKey) seen.add(duplicateKey);
+      cleanedEntries.push(entry);
+      return;
+    }
+
+    const product = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+    const quantity = Number(entry.quantity || 0);
+    if (product && quantity > 0) {
+      changeProductLocationQty(product, normalizeLocation(entry.location), -quantity);
+    }
+    changed = true;
+  });
+
+  if (changed) {
+    state.stockEntries = cleanedEntries;
+    (state.notes || []).forEach((note) => {
+      if (!Array.isArray(note.linkedOrderIds)) return;
+      note.linkedOrderIds = Array.from(new Set(note.linkedOrderIds));
+    });
+  }
+  return changed;
+}
+
+function uniqueImportedNoteItems(items) {
+  const seen = new Set();
+  return (items || []).filter((item) => {
+    const key = [
+      normalizeSearch(item.product || ""),
+      normalizeSearch(item.brand || ""),
+      Number(item.quantity || 0)
+    ].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function manualStockEntries() {
   return (state.stockEntries || []).filter((entry) => entry.movementType);
 }
@@ -4582,6 +4678,7 @@ function startEditCustomer(documentValue) {
   editingCustomerDocument = customer.document;
   form.elements.document.value = formatDocument(customer.document);
   form.elements.name.value = customer.name;
+  if (form.elements.fantasy) form.elements.fantasy.value = customer.fantasy || "";
   form.elements.address.value = customer.address || "";
   form.elements.phone.value = customer.phone || "";
   renderCustomerSalespersonOptions(resolveCustomerSalesperson(customer));
@@ -4598,6 +4695,7 @@ function fillCustomerRegisterForm(customer) {
   const form = qs("#customer-form");
   form.elements.document.value = formatDocument(customer.document);
   form.elements.name.value = customer.name || "";
+  if (form.elements.fantasy) form.elements.fantasy.value = customer.fantasy || "";
   form.elements.address.value = customer.address || "";
   form.elements.phone.value = customer.phone || "";
   renderCustomerSalespersonOptions(resolveCustomerSalesperson(customer));
@@ -4693,6 +4791,7 @@ function handleCustomerForm(event) {
   const data = new FormData(event.currentTarget);
   const documentValue = cleanDocument(data.get("document"));
   const name = String(data.get("name")).trim();
+  const fantasy = String(data.get("fantasy") || "").trim();
   const address = String(data.get("address")).trim();
   const phone = String(data.get("phone")).trim();
   const customerSalesperson = state.salespeople.includes(data.get("customerSalesperson")) ? data.get("customerSalesperson") : "";
@@ -4729,6 +4828,7 @@ function handleCustomerForm(event) {
     const oldName = customer.name;
     customer.document = documentValue;
     customer.name = name;
+    customer.fantasy = plainCustomerText(fantasy);
     customer.address = address;
     customer.phone = phone;
     customer.salesperson = customerSalesperson;
@@ -4762,6 +4862,7 @@ function handleCustomerForm(event) {
   upsertCustomer({
     document: documentValue,
     name,
+    fantasy,
     address,
     phone,
     salesperson: customerSalesperson,
@@ -4799,7 +4900,7 @@ function updateCustomerSalesperson(documentValue, salesperson) {
 }
 
 function normalizeCustomerFormInput(event) {
-  const input = event.target.closest('[name="name"], [name="address"]');
+  const input = event.target.closest('[name="name"], [name="fantasy"], [name="address"]');
   if (!input) return;
   const cursor = input.selectionStart;
   const normalized = String(input.value || "")
@@ -6546,7 +6647,8 @@ function updateStockEntryDestination(entryId, nextLocationValue) {
   if (product) {
     changeProductLocationQty(product, nextLocationValue, remaining);
   } else {
-    addStock(entry.product, remaining, entry.supplier || entry.brand || "Fornecedor importado", entry.invoice, nextLocationValue);
+    product = ensureStockProduct(entry.product, entry.supplier || entry.brand || "Fornecedor importado", entry.invoice);
+    changeProductLocationQty(product, nextLocationValue, remaining);
   }
   entryAllocations(entry).push({
     id: `ALOC-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
@@ -6751,6 +6853,7 @@ function importNote(xmlText, details = {}) {
     if (!details.silent) showToast("XML recusado: destinatario diferente do CNPJ 04.152.053/0001-89.");
     return { ok: false, reason: "destinatario" };
   }
+  note.items = uniqueImportedNoteItems(note.items);
   if (!note.items.length) {
     if (!details.silent) showToast("Nenhum item de cimento encontrado no XML.");
     return { ok: false, reason: "sem_itens" };
@@ -6792,6 +6895,7 @@ function importNote(xmlText, details = {}) {
       observation: note.observation || ""
     });
   });
+  cleanupDuplicateImportedStockEntries();
   state.notes.unshift({
     number: note.number,
     supplier: note.supplier,

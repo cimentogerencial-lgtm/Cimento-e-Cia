@@ -267,6 +267,9 @@
             <label>Nome ou razao social
               <input name="name" required placeholder="Nome do cliente" />
             </label>
+            <label>Nome fantasia
+              <input name="fantasy" placeholder="Nome fantasia" />
+            </label>
             <label>Endereco
               <input name="address" placeholder="Endereco completo" />
             </label>
@@ -341,7 +344,7 @@
               <span class="tag" id="customers-count">0 clientes</span>
             </div>
             <div class="toolbar">
-              <input id="customers-search" placeholder="Cliente, CPF ou CNPJ" />
+              <input id="customers-search" placeholder="Cliente, fantasia, CPF ou CNPJ" />
               <input id="customers-city-filter" placeholder="Cidade" />
               <select id="customers-seller-filter"></select>
               <button class="primary-btn" id="search-customers-btn" type="button">Buscar</button>
@@ -431,7 +434,7 @@
               <h3>Cliente</h3>
               <div class="lookup-row">
                 <label>Buscar cliente
-                  <input id="customer-search" placeholder="Digite uma palavra do nome, CPF ou CNPJ" autocomplete="off" />
+                  <input id="customer-search" placeholder="Digite nome, fantasia, CPF ou CNPJ" autocomplete="off" />
                 </label>
                 <button class="secondary-btn lookup-btn" id="lookup-customer-btn" type="button">Buscar</button>
               </div>
