@@ -2699,25 +2699,6 @@ function renderStockEntryGroupActions(entries) {
   const pending = entries.filter((entry) => entryRemainingQuantity(entry) > 0.009);
   if (!pending.length) return `<span class="status ok">Distribuição concluida</span>`;
 
-  if (pending.length > 1) {
-    return `
-      <div class="entry-distribution-actions">
-        <div class="entry-action-line">
-          <span class="tag">Saldo total ${formatQty(pending.reduce((sum, entry) => sum + entryRemainingQuantity(entry), 0))}</span>
-          <button class="stage-btn" type="button" data-direct-order-group="${pending.map((entry) => entry.id).join(",")}">
-            Criar pedido
-          </button>
-        </div>
-        ${pending.map((entry) => `
-          <div class="entry-action-line">
-            <strong>${entry.product}</strong>
-            <span class="tag">Saldo ${formatQty(entryRemainingQuantity(entry))}</span>
-          </div>
-        `).join("")}
-      </div>
-    `;
-  }
-
   return `
     <div class="entry-distribution-actions">
       ${pending.map((entry) => `
@@ -2725,7 +2706,7 @@ function renderStockEntryGroupActions(entries) {
           ${entries.length > 1 ? `<strong>${entry.product}</strong>` : ""}
           <span class="tag">Saldo ${formatQty(entryRemainingQuantity(entry))}</span>
           <button class="stage-btn" type="button" data-direct-order-entry="${entry.id}">
-            ${entryAllocations(entry).some((allocation) => allocation.type === "order") ? "Criar outro pedido" : "Criar pedido"}
+            Criar pedido deste produto
           </button>
         </div>
       `).join("")}
@@ -5784,6 +5765,14 @@ function renderDirectLoadDistributionLedger(entries = []) {
   const totalQty = validEntries.reduce((sum, entry) => sum + Number(entry.quantity || 0), 0);
   const allocatedQty = validEntries.reduce((sum, entry) => sum + entryAllocatedQuantity(entry), 0);
   const remainingQty = validEntries.reduce((sum, entry) => sum + entryRemainingQuantity(entry), 0);
+  const productSummaryHtml = validEntries.map((entry) => `
+    <div>
+      <strong>${escapeHtml(entry.product || "-")}:</strong>
+      total ${formatQty(entry.quantity)} |
+      salvo ${formatQty(entryAllocatedQuantity(entry))} |
+      saldo ${formatQty(entryRemainingQuantity(entry))}
+    </div>
+  `).join("");
   const rowsHtml = rows.length
     ? rows.map((row) => `
         <tr>
@@ -5801,6 +5790,7 @@ function renderDirectLoadDistributionLedger(entries = []) {
       Total da nota: ${formatQty(totalQty)} |
       Salvo: ${formatQty(allocatedQty)} |
       Saldo restante: ${formatQty(remainingQty)}
+      ${validEntries.length > 1 ? `<div class="direct-load-product-summary">${productSummaryHtml}</div>` : ""}
     </div>
     ${rows.length && remainingQty > 0.009 ? `
       <div class="direct-load-distribution-guidance">
@@ -5892,18 +5882,24 @@ function sendDirectLoadQuantityToStock(stockLocation, qty) {
     showToast("Nota vinculada nao encontrada.");
     return false;
   }
-  const allocationItems = sourceEntryGroup.length > 1 ? directLoadGroupedItems() : [];
+  const groupedRows = sourceEntryGroup.length > 1 ? directLoadGroupedRows() : [];
+  const allocationItems = sourceEntryGroup.length > 1 ? groupedRows.filter((item) => item.qty > 0.009) : [];
   const totalAvailable = entries.reduce((sum, entry) => sum + entryRemainingQuantity(entry), 0);
   if (!qty || qty <= 0) {
     showToast("Informe uma quantidade maior que zero.");
     return false;
   }
-  if (!sourceEntryGroup.length && qty > totalAvailable + 0.009) {
-    showToast(`Quantidade maior que o saldo disponivel da nota: ${formatQty(totalAvailable)}.`);
+  if (sourceEntryGroup.length > 1 && !allocationItems.length) {
+    showToast("Informe a quantidade de pelo menos um produto da nota.");
     return false;
   }
-  if (allocationItems.length && allocationItems.some((item) => !item.qty || item.qty <= 0)) {
-    showToast("Informe a quantidade de cada produto que vai para o estoque.");
+  const invalidGroupedQty = groupedRows.find((item) => item.qty < 0 || item.qty > item.remaining + 0.009);
+  if (invalidGroupedQty) {
+    showToast(`Quantidade invalida para ${invalidGroupedQty.product}. Saldo disponivel: ${formatQty(invalidGroupedQty.remaining)}.`);
+    return false;
+  }
+  if (!sourceEntryGroup.length && qty > totalAvailable + 0.009) {
+    showToast(`Quantidade maior que o saldo disponivel da nota: ${formatQty(totalAvailable)}.`);
     return false;
   }
   const allocations = allocationItems.length
@@ -6006,11 +6002,14 @@ function renderDirectLoadItems(entries = []) {
   }
   table.innerHTML = items.map((entry) => {
     const qty = entryRemainingQuantity(entry);
+    const distributionActive = Boolean(sourceEntryDistributionEnabled
+      || items.some((item) => item.distributionStarted));
+    const defaultQty = distributionActive ? 0 : qty;
     return `
       <tr>
         <td>${escapeHtml(entry.product)}</td>
         <td>
-          <input class="direct-load-item-qty" type="number" min="0" max="${qty}" step="1" value="${qty}" data-direct-item-qty-input="${escapeAttr(entry.id)}" />
+          <input class="direct-load-item-qty" type="number" min="0" max="${qty}" step="1" value="${defaultQty}" data-direct-item-qty-input="${escapeAttr(entry.id)}" />
         </td>
         <td>
           <input class="direct-load-item-price" type="number" min="0.01" step="0.01" value="0.00" data-direct-item-price="${escapeAttr(entry.id)}" />
@@ -6021,7 +6020,7 @@ function renderDirectLoadItems(entries = []) {
   }).join("");
 }
 
-function directLoadGroupedItems() {
+function directLoadGroupedRows() {
   return sourceEntryGroupForOrderIds
     .map((entryId) => state.stockEntries.find((entry) => entry.id === entryId))
     .filter((entry) => entry && entryRemainingQuantity(entry) > 0.009)
@@ -6029,7 +6028,7 @@ function directLoadGroupedItems() {
       const remaining = entryRemainingQuantity(entry);
       const qtyInput = qs(`[data-direct-item-qty-input="${CSS.escape(entry.id)}"]`);
       const input = qs(`[data-direct-item-price="${CSS.escape(entry.id)}"]`);
-      const qty = Math.min(Number(qtyInput?.value || 0), remaining);
+      const qty = Number(qtyInput?.value || 0);
       const price = Number(input?.value || 0);
       const product = findStockProductForEntry(entry);
       return {
@@ -6037,10 +6036,16 @@ function directLoadGroupedItems() {
         productId: product?.id || "",
         product: entry.product,
         qty,
+        remaining,
         price,
         value: qty * price
       };
     });
+}
+
+function directLoadGroupedItems() {
+  return directLoadGroupedRows()
+    .filter((item) => item.qty > 0.009);
 }
 
 function updateDirectLoadItemTotals() {
@@ -6200,16 +6205,32 @@ function handleSale(event) {
     showToast("Informe uma quantidade maior que zero.");
     return;
   }
-  const groupedDirectItems = sourceEntryGroup.length > 1 && !editingOrderId ? directLoadGroupedItems() : [];
-  if (groupedDirectItems.length) {
-    qty = groupedDirectItems.reduce((sum, item) => sum + item.qty, 0);
-  }
-  if (groupedDirectItems.length && !directStockLocation && groupedDirectItems.some((item) => !item.qty || item.qty <= 0 || !item.price || item.price <= 0)) {
-    showToast("Informe a quantidade e o preco unitario de cada produto da nota.");
+  const isGroupedDirectMode = sourceEntryGroup.length > 1 && !editingOrderId;
+  const groupedDirectRows = isGroupedDirectMode ? directLoadGroupedRows() : [];
+  const groupedDirectItems = isGroupedDirectMode ? groupedDirectRows.filter((item) => item.qty > 0.009) : [];
+  if (isGroupedDirectMode && !groupedDirectItems.length) {
+    showToast("Informe a quantidade de pelo menos um produto da nota.");
     return;
   }
-  if (groupedDirectItems.length && directStockLocation && groupedDirectItems.some((item) => !item.qty || item.qty <= 0)) {
-    showToast("Informe a quantidade de cada produto que vai para o estoque.");
+  if (isGroupedDirectMode) {
+    const invalidGroupedQty = groupedDirectRows.find((item) => item.qty < 0 || item.qty > item.remaining + 0.009);
+    if (invalidGroupedQty) {
+      showToast(`Quantidade invalida para ${invalidGroupedQty.product}. Saldo disponivel: ${formatQty(invalidGroupedQty.remaining)}.`);
+      return;
+    }
+    const distributionActive = Boolean(sourceEntryDistributionEnabled || sourceEntryGroup.some((entry) => entry.distributionStarted));
+    const partialWithoutDistribution = !distributionActive
+      && groupedDirectRows.some((item) => Math.abs(Number(item.qty || 0) - Number(item.remaining || 0)) > 0.009);
+    if (partialWithoutDistribution) {
+      showToast("Para usar apenas parte da nota, clique em Distribuir carga. Sem distribuicao, todos os produtos devem fechar o saldo total da NF.");
+      return;
+    }
+  }
+  if (isGroupedDirectMode) {
+    qty = groupedDirectItems.reduce((sum, item) => sum + item.qty, 0);
+  }
+  if (isGroupedDirectMode && !directStockLocation && groupedDirectItems.some((item) => !item.price || item.price <= 0)) {
+    showToast("Informe o preco unitario dos produtos que serao salvos nesta parte.");
     return;
   }
   const standardOrderItems = !isDirectLoad ? buildStandardOrderItems(product, qty, price, stockLocation) : [];
@@ -6314,6 +6335,14 @@ function handleSale(event) {
   const groupedProductsLabel = isGroupedDirectOrder
     ? groupedDirectItems.map((item) => `${item.product} ${formatQty(item.qty)} ${money.format(item.price)}`).join(" / ")
     : "";
+  const groupedOrderItems = groupedDirectItems.map((item) => ({
+    productId: item.productId || "",
+    product: item.product || "",
+    qty: Number(item.qty || 0),
+    price: Number(item.price || 0),
+    value: Number(item.value || 0),
+    stockLocation
+  }));
   const standardProductsLabel = standardOrderItems.length > 1
     ? standardOrderItems.map((item) => `${item.product} ${formatQty(item.qty)}`).join(" / ")
     : "";
@@ -6325,6 +6354,14 @@ function handleSale(event) {
       showToast("Pedido nao encontrado para edicao.");
       return;
     }
+
+    const editingDirectLoad = Boolean(order.directLoad || order.sourceEntryId);
+    const originalDirectItems = editingDirectLoad ? orderItems(order) : [];
+    const originalDirectProductId = order.productId;
+    const originalDirectProduct = order.product;
+    const originalDirectLoadItems = Array.isArray(order.directLoadItems)
+      ? order.directLoadItems.map((item) => ({ ...item }))
+      : [];
 
     const wasDelivered = order.stockPosted;
     if (wasDelivered && !order.directLoad) changeOrderItemsStock(order, 1, "Estorno de ajuste de pedido");
@@ -6348,19 +6385,41 @@ function handleSale(event) {
     order.customer = customer.name;
     order.address = customer.address;
     order.phone = customer.phone;
-    order.productId = product.id;
-    order.product = standardProductsLabel || product.product;
-    order.qty = qty;
-    order.price = orderUnitPrice;
-    order.value = value;
-    order.items = standardOrderItems;
+    if (editingDirectLoad) {
+      const directValue = qty * price;
+      order.productId = originalDirectProductId || product.id;
+      order.product = originalDirectProduct || product.product;
+      order.qty = qty;
+      order.price = price;
+      order.value = directValue;
+      if (originalDirectItems.length === 1) {
+        order.items = [{
+          ...originalDirectItems[0],
+          qty,
+          price,
+          value: directValue
+        }];
+      } else if (originalDirectItems.length > 1) {
+        order.items = order.items || [];
+      } else {
+        order.items = [];
+      }
+      order.directLoadItems = originalDirectLoadItems;
+    } else {
+      order.productId = product.id;
+      order.product = standardProductsLabel || product.product;
+      order.qty = qty;
+      order.price = orderUnitPrice;
+      order.value = value;
+      order.items = standardOrderItems;
+    }
     order.payment = orderPayment;
     order.paymentTerm = orderPaymentTerm;
     order.salesperson = orderSalesperson;
     order.driver = driver;
     order.freightType = freightType;
     order.observation = observation;
-    order.stockLocation = stockLocation;
+    order.stockLocation = editingDirectLoad ? order.stockLocation : stockLocation;
 
     if (order.directLoad && sourceEntry) {
       const allocation = entryAllocations(sourceEntry).find((item) => item.orderId === order.id);
@@ -6371,8 +6430,8 @@ function handleSale(event) {
     const receivable = state.receivables.find((item) => item.origin === order.id);
     if (receivable) {
       receivable.customer = customer.name;
-      receivable.value = value;
-      receivable.payment = orderPayment;
+      receivable.value = order.value;
+      receivable.payment = order.payment;
     }
     replaceOpenReceivablesForOrder(order);
 
@@ -6413,7 +6472,7 @@ function handleSale(event) {
     sourceEntryId: sourceEntry?.id || "",
     sourceEntryIds: sourceEntryGroup.length ? sourceEntryGroup.map((entry) => entry.id) : [],
     directLoadItems: groupedDirectItems,
-    items: standardOrderItems,
+    items: isGroupedDirectOrder ? groupedOrderItems : standardOrderItems,
     sourceInvoice: sourceEntry?.invoice || "",
     sourceFactoryOrder: sourceEntry?.factoryOrder || "",
     sellerUser: loggedUser.user,
@@ -6470,21 +6529,26 @@ function handleSale(event) {
     : [];
   const directEntryId = sourceEntryGroup.length ? "" : sourceEntry?.id || "";
   const directRemaining = sourceEntryGroup.length ? 0 : sourceEntry ? entryRemainingQuantity(sourceEntry) : 0;
+  const hasPendingDirectDistribution = Boolean((sourceEntryGroup.length && remainingGroupEntryIds.length) || directRemaining > 0.009);
+  if (isDirectLoad) {
+    order.distributionPending = hasPendingDirectDistribution;
+    order.distributionComplete = !hasPendingDirectDistribution;
+  }
   resetSaleForm();
   saveState();
   renderCustomerOptions();
   renderAll();
   if (directEntryId && directRemaining > 0.009) {
     createDirectOrderFromEntry(directEntryId);
-    showToast(`Pedido salvo. Novo pedido aberto com o saldo de ${formatQty(directRemaining)}.`);
+    showToast(`Parte salva. Ainda falta distribuir ${formatQty(directRemaining)} desta nota.`);
     return;
   }
   if (remainingGroupEntryIds.length) {
     createDirectOrderFromEntryGroup(remainingGroupEntryIds.join(","));
-    showToast("Pedido salvo. Novo pedido aberto com o saldo restante da nota.");
+    showToast("Parte salva. A nota ainda tem produto com saldo para distribuir.");
     return;
   }
-  showToast("Pedido salvo. Estoque sera baixado somente na entrega.");
+  showToast(isDirectLoad ? "Distribuicao concluida. Pedido salvo." : "Pedido salvo. Estoque sera baixado somente na entrega.");
 }
 
 function updateOrderStage(orderId, nextStage) {
@@ -7648,6 +7712,8 @@ function bindEvents() {
     }
     sourceEntryDistributionEnabled = true;
     showDirectLoadInfo(entry.invoice || "", entry.factoryOrder || "", entry);
+    renderDirectLoadItems(currentDirectLoadEntries(entry));
+    updateDirectLoadItemTotals();
     qs('[name="quantity"]').focus();
     showToast("Distribuição ativada. Informe a quantidade deste pedido.");
   });
