@@ -467,9 +467,9 @@
                 <select name="salesperson" id="salesperson" required></select>
               </label>
               <label>Motorista
-                <input name="driver" id="sale-driver" list="driver-options" placeholder="Nome do motorista" />
-                <datalist id="driver-options"></datalist>
+                <input name="driver" id="sale-driver" autocomplete="off" placeholder="Nome do motorista" />
               </label>
+              <div class="driver-search-results" id="driver-search-results" hidden></div>
               <input name="freightType" id="sale-freight-type" type="hidden" value="entrega" />
               <button class="secondary-btn freight-return-btn" id="toggle-freight-return" type="button" aria-pressed="false">Marcar frete de retorno</button>
               <div class="last-sale-info">
@@ -982,6 +982,10 @@
               <input id="weighted-city-filter" list="weighted-city-options" placeholder="Cidade" />
               <datalist id="weighted-city-options"></datalist>
             </label>
+            <label>Produto
+              <input id="weighted-product-filter" list="weighted-product-options" placeholder="Produto" />
+              <datalist id="weighted-product-options"></datalist>
+            </label>
             <label>De
               <input id="weighted-start-filter" type="date" />
             </label>
@@ -996,6 +1000,7 @@
                 <th>Cidade</th>
                 <th class="right">Quantidade</th>
                 <th class="right">Valor total</th>
+                <th class="right">Fretes</th>
                 <th class="right">Media por saco</th>
               </tr>
             </thead>
@@ -1014,6 +1019,7 @@
                 <th class="right">Quantidade</th>
                 <th class="right">Preco unitario</th>
                 <th class="right">Valor total</th>
+                <th class="right">Frete</th>
               </tr>
             </thead>
             <tbody id="weighted-average-detail-table"></tbody>
@@ -1103,6 +1109,7 @@
           <button class="config-tab active" type="button" data-config-tab-button="acessos">Acessos</button>
           <button class="config-tab" type="button" data-config-tab-button="permissoes">Permissoes</button>
           <button class="config-tab" type="button" data-config-tab-button="vendedores">Vendedores</button>
+          <button class="config-tab" type="button" data-config-tab-button="motoristas">Motoristas</button>
           <button class="config-tab" type="button" data-config-tab-button="cidades">Cidades</button>
           <button class="config-tab" type="button" data-config-tab-button="painel">Painel</button>
           <button class="config-tab" type="button" data-config-tab-button="estoque">Estoque</button>
@@ -1175,6 +1182,25 @@
             <tbody id="salespeople-table"></tbody>
           </table>
         </section>
+        <section class="panel config-tab-panel" data-config-tab-panel="motoristas" hidden>
+          <div class="panel-head">
+            <h2>Cadastro de motoristas</h2>
+            <span class="tag" id="drivers-count">0 motoristas</span>
+          </div>
+          <form class="inline-form" id="driver-form">
+            <input id="driver-name" placeholder="Novo motorista" />
+            <button class="primary-btn" type="submit">Adicionar</button>
+          </form>
+          <table>
+            <thead>
+              <tr>
+                <th>Motorista</th>
+                <th class="right">Acoes</th>
+              </tr>
+            </thead>
+            <tbody id="drivers-table"></tbody>
+          </table>
+        </section>
         <section class="panel config-tab-panel" data-config-tab-panel="cidades" hidden>
           <div class="panel-head">
             <h2>Cidades por vendedor</h2>
@@ -1218,6 +1244,20 @@
           </div>
         </section>
         <section class="panel config-tab-panel" data-config-tab-panel="estoque" hidden>
+          <div class="panel-head">
+            <div>
+              <h2>Trava de estoque</h2>
+              <p class="panel-subtitle">Movimentacoes com data menor ou igual a data travada ficam bloqueadas.</p>
+            </div>
+            <span class="tag" id="stock-lock-status">Destravado</span>
+          </div>
+          <div class="stock-lock-settings">
+            <label>Travar ate
+              <input id="stock-lock-date" type="date" />
+            </label>
+            <button class="primary-btn" id="save-stock-lock-btn" type="button">Salvar trava</button>
+            <button class="secondary-btn" id="clear-stock-lock-btn" type="button">Destravar estoque</button>
+          </div>
           <div class="panel-head">
             <h2>Lançamentos manuais do estoque</h2>
             <button class="primary-btn" id="add-stock-btn" type="button">Novo lançamento</button>

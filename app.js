@@ -39,6 +39,7 @@ let cloudUnsubscribe = null;
 let applyingCloudState = false;
 let firebaseAuth = null;
 let firebaseReady = false;
+let firebaseLoginInProgress = false;
 let currentSessionUser = null;
 let lastCloudError = "";
 const stockLocations = ["Divinopolis", "Arcos"];
@@ -82,6 +83,30 @@ function defaultPermissions() {
   }, {});
 }
 
+function serializeUsersConfig() {
+  return users.map((item) => ({
+    user: item.user,
+    name: item.name,
+    password: item.password,
+    permissions: item.permissions || defaultPermissions()
+  }));
+}
+
+function applyUsersConfig(savedUsers) {
+  if (!Array.isArray(savedUsers)) return;
+  users.forEach((user) => {
+    const saved = savedUsers.find((item) => item.user === user.user);
+    if (saved?.name) user.name = saved.name;
+    if (saved?.password) user.password = saved.password;
+    user.permissions = { ...defaultPermissions(), ...(saved?.permissions || {}) };
+  });
+}
+
+function syncUsersConfigToState() {
+  if (typeof state === "undefined") return;
+  state.usersConfig = serializeUsersConfig();
+}
+
 function safeLocalJson(key, fallback = null) {
   try {
     const raw = localStorage.getItem(key);
@@ -102,12 +127,7 @@ function safeLocalJson(key, fallback = null) {
 
 const savedUsers = safeLocalJson("cimentoGestorUsers", null);
 if (savedUsers) {
-  users.forEach((user) => {
-    const saved = savedUsers.find((item) => item.user === user.user);
-    if (saved?.name) user.name = saved.name;
-    if (saved?.password) user.password = saved.password;
-    user.permissions = { ...defaultPermissions(), ...(saved?.permissions || {}) };
-  });
+  applyUsersConfig(savedUsers);
 }
 users.forEach((user) => {
   user.permissions = { ...defaultPermissions(), ...(user.permissions || {}) };
@@ -133,13 +153,16 @@ const state = {
   deletedOrders: [],
   customers: [],
   receivables: [],
+  usersConfig: [],
   salespeople: ["Edmilson", "Edson", "Balcao", "Vendas externas", "Douglas"],
+  drivers: [],
   sellerCities: [],
   paymentRules: [],
   paymentTerms: [],
   freightRates: [],
   freightTypes: {},
   dashboardLockOverrides: {},
+  stockLockDate: "",
   manualStockSequence: 0,
   reusableOrderIds: [],
   paymentMethods: [...defaultPaymentMethods],
@@ -240,8 +263,16 @@ const savedState = safeLocalJson("cimentoGestorState", null);
 if (savedState) {
   Object.assign(state, savedState);
 }
+if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
+  applyUsersConfig(state.usersConfig);
+} else {
+  syncUsersConfigToState();
+}
 state.deletedOrders = Array.isArray(state.deletedOrders) ? state.deletedOrders : [];
 state.reusableOrderIds = Array.isArray(state.reusableOrderIds) ? state.reusableOrderIds : [];
+state.drivers = Array.isArray(state.drivers)
+  ? Array.from(new Set(state.drivers.map((driver) => cleanDriverName(driver)).filter(Boolean)))
+  : [];
 state.freightRates = Array.isArray(state.freightRates) ? state.freightRates.map((rate, index) => ({
   id: rate.id || `frete-${Date.now()}-${index}`,
   type: ["entrega", "retorno", "galpao"].includes(rate.type) ? rate.type : "entrega",
@@ -257,6 +288,7 @@ if (state.dashboardLocked === true && state.dashboardLockOverrides[today] === un
   state.dashboardLockOverrides[today] = true;
 }
 state.dashboardLocked = false;
+state.stockLockDate = String(state.stockLockDate || "");
 importCustomerBatchIfNeeded();
 state.orders.forEach((order) => {
   order.driver = order.driver || "";
@@ -598,6 +630,11 @@ function applyCloudStateWithLocalBackup(cloudState, _localState) {
     JSON.parse(JSON.stringify(emptyStateTemplate)),
     cloudState || {}
   );
+  if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
+    applyUsersConfig(state.usersConfig);
+  } else {
+    syncUsersConfigToState();
+  }
   return cleanupDuplicateImportedStockEntries();
 }
 
@@ -658,7 +695,7 @@ async function initFirebaseSync() {
       renderAll();
       applyingCloudState = false;
       if (cleanedCloudState) persistCleanedCloudState();
-      showToast(`Dados online carregados. ${state.notes.length} notas importadas.`);
+      showToast("Dados online carregados.");
     } else {
       await writeCloudState({ createdAt: new Date().toISOString() });
       showToast("Firebase conectado. Base inicial criada.");
@@ -751,12 +788,27 @@ function clearCloudError() {
 }
 
 function saveUsersConfig() {
-  localStorage.setItem("cimentoGestorUsers", JSON.stringify(users.map((item) => ({
-    user: item.user,
-    name: item.name,
-    password: item.password,
-    permissions: item.permissions || defaultPermissions()
-  }))));
+  const activeUserConfig = currentSessionUser
+    ? users.find((item) => item.user === currentSessionUser.user)
+    : null;
+  if (activeUserConfig) {
+    currentSessionUser = {
+      ...currentSessionUser,
+      name: activeUserConfig.name,
+      role: activeUserConfig.role,
+      permissions: { ...defaultPermissions(), ...(activeUserConfig.permissions || {}) }
+    };
+    localStorage.setItem("cimentoGestorSession", JSON.stringify({
+      user: currentSessionUser.user,
+      name: currentSessionUser.name,
+      role: currentSessionUser.role,
+      permissions: currentSessionUser.permissions
+    }));
+  }
+  syncUsersConfigToState();
+  localStorage.setItem("cimentoGestorUsers", JSON.stringify(state.usersConfig));
+  saveState();
+  saveStateToCloudNow();
 }
 
 function getLoggedUser() {
@@ -822,19 +874,6 @@ async function handleLogin(event) {
   const data = new FormData(form);
   const login = String(data.get("user")).trim().toLowerCase();
   const password = String(data.get("password") || "").trim();
-  const isLocalFile = window.location.protocol === "file:";
-
-  const localEmailRecovery = isLocalFile
-    && login.includes("@")
-    && password.length > 0;
-  if (localEmailRecovery) {
-    const user = userProfileFromEmail(login);
-    saveLoginSession(user);
-    form.reset();
-    showSystem(user);
-    showToast("Acesso local liberado para teste. Para sincronizar, use o link publicado.");
-    return;
-  }
 
   if (window.CIMENTO_FIREBASE?.enabled && login.includes("@") && (!firebaseReady || !firebaseAuth)) {
     showCloudError("Firebase nao carregou. Publique a versao atual e confira a internet.");
@@ -843,19 +882,23 @@ async function handleLogin(event) {
 
   if (firebaseReady && firebaseAuth && login.includes("@")) {
     try {
+      firebaseLoginInProgress = true;
       const credential = await firebaseAuth.signInWithEmailAndPassword(login, password);
       saveLoginSession(userProfileFromEmail(credential.user.email));
       await initFirebaseSync();
       if (!cloudReady) {
         showCloudError(`Login aceito, mas o Firestore nao conectou: ${lastCloudError || "confira regras do banco e internet"}.`);
         await firebaseAuth.signOut();
+        firebaseLoginInProgress = false;
         return;
       }
       form.reset();
       showSystem(currentSessionUser);
       showToast("Login seguro realizado pelo Firebase.");
+      firebaseLoginInProgress = false;
       return;
     } catch (error) {
+      firebaseLoginInProgress = false;
       const messages = {
         "auth/invalid-login-credentials": "E-mail ou senha incorretos no Firebase.",
         "auth/user-not-found": "Este e-mail nao esta cadastrado no Firebase.",
@@ -930,6 +973,11 @@ function initLogin() {
   if (firebaseAuth) {
     firebaseAuth.onAuthStateChanged(async (firebaseUser) => {
       if (firebaseUser) {
+        if (!currentSessionUser && !firebaseLoginInProgress) {
+          await firebaseAuth.signOut();
+          showLogin();
+          return;
+        }
         saveLoginSession(userProfileFromEmail(firebaseUser.email));
         await initFirebaseSync();
         if (cloudReady) {
@@ -1160,6 +1208,26 @@ function renderSalespeopleSettings() {
   `).join("");
   renderCustomerSalespersonOptions();
   renderSellerCitiesSettings();
+}
+
+function renderDriversSettings() {
+  const count = qs("#drivers-count");
+  if (count) count.textContent = `${state.drivers.length} motoristas`;
+  const table = qs("#drivers-table");
+  if (!table) return;
+  table.innerHTML = state.drivers.length ? state.drivers.map((driver) => `
+    <tr>
+      <td><input class="settings-input" data-driver="${escapeAttr(driver)}" value="${escapeAttr(driver)}" /></td>
+      <td class="right">
+        <button class="stage-btn" type="button" data-save-driver="${escapeAttr(driver)}">Salvar</button>
+        <button class="danger-btn" type="button" data-delete-driver="${escapeAttr(driver)}">Excluir</button>
+      </td>
+    </tr>
+  `).join("") : `
+    <tr>
+      <td colspan="2" class="empty-row">Nenhum motorista cadastrado.</td>
+    </tr>
+  `;
 }
 
 function salespersonOptions(selected = "") {
@@ -1701,6 +1769,7 @@ function buildWarehouseOrderLoad(order) {
 
 function driverOptions() {
   const names = [
+    ...state.drivers.map((driver) => cleanDriverName(driver)),
     ...state.stockEntries.map((entry) => cleanDriverName(entry.loadedBy)),
     ...state.notes.map((note) => cleanDriverName(note.loadedBy)),
     ...state.orders.map((order) => cleanDriverName(order.driver))
@@ -1708,12 +1777,32 @@ function driverOptions() {
   return Array.from(new Set(names)).sort((a, b) => normalizeSearch(a).localeCompare(normalizeSearch(b)));
 }
 
+function driverSearchOptions(searchValue = "") {
+  const search = normalizeSearch(searchValue);
+  return driverOptions()
+    .filter((driver) => !search || normalizeSearch(driver).includes(search))
+    .slice(0, 10);
+}
+
+function renderDriverSearchOptions(searchValue = "") {
+  const results = qs("#driver-search-results");
+  if (!results) return;
+  const drivers = driverSearchOptions(searchValue);
+  if (!drivers.length) {
+    results.hidden = true;
+    results.innerHTML = "";
+    return;
+  }
+  results.hidden = false;
+  results.innerHTML = drivers.map((driver) => `
+    <button class="customer-result-row" type="button" data-select-driver="${escapeAttr(driver)}">
+      <strong>${driver}</strong>
+    </button>
+  `).join("");
+}
+
 function renderDriverOptions() {
   const options = driverOptions();
-  const datalist = qs("#driver-options");
-  if (datalist) {
-    datalist.innerHTML = options.map((name) => `<option value="${escapeAttr(name)}"></option>`).join("");
-  }
   const tripSelect = qs("#trip-report-driver");
   if (tripSelect) {
     const current = tripSelect.value || "";
@@ -1943,6 +2032,54 @@ function toggleDashboardDateLock() {
   renderDashboardLockSettings();
   renderDailyLoadBoard();
   showToast(nextLocked ? "Painel da data travado." : "Painel da data destravado.");
+}
+
+function isStockDateLocked(dateValue) {
+  const lockDate = String(state.stockLockDate || "");
+  const date = String(dateValue || today);
+  return Boolean(lockDate && date && date <= lockDate);
+}
+
+function assertStockDateUnlocked(dateValue, actionText = "alterar o estoque") {
+  if (!isStockDateLocked(dateValue)) return true;
+  showToast(`Estoque travado ate ${formatDateBR(state.stockLockDate)}. Nao e possivel ${actionText} nessa data.`);
+  return false;
+}
+
+function renderStockLockSettings() {
+  const input = qs("#stock-lock-date");
+  const status = qs("#stock-lock-status");
+  const clearButton = qs("#clear-stock-lock-btn");
+  if (!input || !status) return;
+  if (!input.value) input.value = state.stockLockDate || today;
+  status.textContent = state.stockLockDate
+    ? `Travado ate ${formatDateBR(state.stockLockDate)}`
+    : "Destravado";
+  if (clearButton) clearButton.disabled = !state.stockLockDate;
+}
+
+function saveStockLockDate() {
+  const input = qs("#stock-lock-date");
+  const date = input?.value || "";
+  if (!date) {
+    showToast("Informe uma data para travar o estoque.");
+    return;
+  }
+  state.stockLockDate = date;
+  saveState();
+  saveStateToCloudNow();
+  renderStockLockSettings();
+  showToast(`Estoque travado ate ${formatDateBR(date)}.`);
+}
+
+function clearStockLockDate() {
+  state.stockLockDate = "";
+  const input = qs("#stock-lock-date");
+  if (input) input.value = today;
+  saveState();
+  saveStateToCloudNow();
+  renderStockLockSettings();
+  showToast("Trava de estoque removida.");
 }
 
 function unresolvedLoadDates() {
@@ -2428,6 +2565,9 @@ function buildStockLedger(productId) {
             document: entry.invoice,
             party: `${entry.supplier || entry.loadedBy || "-"} / ${allocation.location}`,
             location: allocation.location,
+            sourceEntryId: entry.id,
+            allocationId: allocation.id,
+            canReverseStockAllocation: true,
             manualEntryId: "",
             isManualMovement: false,
             entry: Number(allocation.qty || 0),
@@ -2547,7 +2687,7 @@ function renderStockLedger(productId) {
     <tr class="${row.isManualMovement ? "manual-adjustment-row" : ""}">
       <td>${row.date.split("-").reverse().join("/")}</td>
       <td>${row.type}</td>
-      <td><strong>${row.document || "-"}</strong></td>
+      <td>${stockLedgerDocumentCell(row)}</td>
       <td>${row.party || "-"}</td>
       <td class="right">${row.entry ? formatQty(row.entry) : "-"}</td>
       <td class="right">${row.exit ? formatQty(row.exit) : "-"}</td>
@@ -2558,6 +2698,39 @@ function renderStockLedger(productId) {
       <td colspan="7">Nenhuma movimentação encontrada para este produto${filterDate ? " nesta data" : ""}.</td>
     </tr>
   `;
+}
+
+function stockLedgerDocumentCell(row) {
+  const documentLabel = escapeHtml(row.document || "-");
+  if (!row.canReverseStockAllocation || !row.sourceEntryId || !row.allocationId) {
+    return `<strong>${documentLabel}</strong>`;
+  }
+  return `
+    <button class="ledger-doc-action" type="button"
+      data-stock-ledger-reversal="${escapeAttr(row.sourceEntryId)}:${escapeAttr(row.allocationId)}">
+      ${documentLabel}
+    </button>
+  `;
+}
+
+function closeStockLedgerActionMenu() {
+  document.querySelector("#stock-ledger-action-menu")?.remove();
+}
+
+function showStockLedgerActionMenu(anchor, entryId, allocationId) {
+  closeStockLedgerActionMenu();
+  const menu = document.createElement("div");
+  menu.id = "stock-ledger-action-menu";
+  menu.className = "stock-ledger-action-menu";
+  menu.innerHTML = `<button type="button">Estornar</button>`;
+  document.body.appendChild(menu);
+  const rect = anchor.getBoundingClientRect();
+  menu.style.left = `${rect.left + window.scrollX}px`;
+  menu.style.top = `${rect.bottom + window.scrollY + 6}px`;
+  menu.querySelector("button").addEventListener("click", () => {
+    closeStockLedgerActionMenu();
+    reverseStockEntryAllocation(entryId, allocationId);
+  });
 }
 
 function getStockEntryFilters() {
@@ -2698,9 +2871,17 @@ function renderStockUnitButtons(entry) {
 function renderStockEntryGroupActions(entries) {
   const pending = entries.filter((entry) => entryRemainingQuantity(entry) > 0.009);
   if (!pending.length) return `<span class="status ok">Distribuição concluida</span>`;
+  const groupIds = pending.map((entry) => entry.id).join(",");
+  const showSingleOrderOption = pending.length > 1;
 
   return `
     <div class="entry-distribution-actions">
+      ${showSingleOrderOption ? `
+        <button class="stage-btn" type="button" data-direct-order-group="${escapeAttr(groupIds)}">
+          Criar pedido unico
+        </button>
+        <span class="muted small">Ou distribua por produto abaixo</span>
+      ` : ""}
       ${pending.map((entry) => `
         <div class="entry-action-line">
           ${entries.length > 1 ? `<strong>${entry.product}</strong>` : ""}
@@ -2811,6 +2992,10 @@ function updateInvoiceUnitDestination(entryId, allocationId, nextLocation) {
   const quantity = Number(isLegacy ? entry.quantity : allocation.qty) || 0;
   if (oldLocation === nextLocation) {
     showToast("A entrada ja esta nesta unidade.");
+    return;
+  }
+  if (!assertStockDateUnlocked(entry.date, "alterar esta entrada de unidade")) {
+    renderInvoiceDestinationsSummary();
     return;
   }
 
@@ -3742,18 +3927,24 @@ function sellerReportData() {
   }).sort((a, b) => b.total - a.total);
 }
 
+function freightValueForWeightedRow(row) {
+  const rate = freightRateFor(row.freightType || "entrega", row.city);
+  return rate ? Number(rate.value || 0) * Number(row.qty || 0) : 0;
+}
+
 function weightedAverageSummaryRows(rows = weightedAverageOrders()) {
   const grouped = new Map();
   rows.forEach((row) => {
-    const key = normalizeSearch(row.city);
-    const item = grouped.get(key) || { city: row.city, qty: 0, total: 0 };
+    const key = `${normalizeSearch(row.city)}|${normalizeSearch(row.product)}`;
+    const item = grouped.get(key) || { city: row.city, product: row.product, qty: 0, total: 0, freight: 0 };
     item.qty += row.qty;
     item.total += row.total;
+    item.freight += row.freight;
     grouped.set(key, item);
   });
   return Array.from(grouped.values())
     .map((row) => ({ ...row, average: row.qty ? row.total / row.qty : 0 }))
-    .sort((a, b) => a.city.localeCompare(b.city, "pt-BR"));
+    .sort((a, b) => a.city.localeCompare(b.city, "pt-BR") || a.product.localeCompare(b.product, "pt-BR"));
 }
 
 function exportSalesReportExcel() {
@@ -3796,24 +3987,27 @@ function exportWeightedReportExcel() {
   downloadExcelWorkbook(`media-ponderada-${today}.xls`, [
     {
       name: "Media ponderada",
-      headers: ["Cidade", "Quantidade", "Valor total", "Media por saco"],
+      headers: ["Cidade", "Produto", "Quantidade", "Valor total", "Fretes", "Media por saco"],
       rows: summaryRows.map((row) => [
         { value: row.city },
+        { value: row.product },
         { value: row.qty, className: "integer" },
         { value: row.total, className: "money" },
+        { value: row.freight, className: "money" },
         { value: row.average, className: "money" }
       ])
     },
     {
       name: "Conferencia das vendas",
-      headers: ["Data", "Cidade", "Produto", "Quantidade", "Preco unitario", "Valor total"],
+      headers: ["Data", "Cidade", "Produto", "Quantidade", "Preco unitario", "Valor total", "Frete"],
       rows: detailRows.map((row) => [
         { value: formatDateBR(row.date), className: "date" },
         { value: row.city },
         { value: row.product },
         { value: row.qty, className: "integer" },
         { value: row.unitPrice, className: "money" },
-        { value: row.total, className: "money" }
+        { value: row.total, className: "money" },
+        { value: row.freight, className: "money" }
       ])
     }
   ]);
@@ -3939,6 +4133,7 @@ function cityFromOrder(order) {
 
 function weightedAverageOrders() {
   const cityFilter = normalizeSearch(qs("#weighted-city-filter")?.value || "");
+  const productFilter = normalizeSearch(qs("#weighted-product-filter")?.value || "");
   const startFilter = qs("#weighted-start-filter")?.value || "";
   const endFilter = qs("#weighted-end-filter")?.value || "";
   return state.orders
@@ -3954,25 +4149,37 @@ function weightedAverageOrders() {
         product: item.product || order.product || "-",
         qty,
         unitPrice: unitPrice || (qty ? total / qty : 0),
-        total
+        total,
+        freightType: order.freightType || "entrega",
+        freight: 0
       };
       });
     })
+    .map((row) => ({ ...row, freight: freightValueForWeightedRow(row) }))
     .filter((row) => row.qty > 0)
     .filter((row) => !startFilter || row.date >= startFilter)
     .filter((row) => !endFilter || row.date <= endFilter)
-    .filter((row) => !cityFilter || normalizeSearch(row.city).includes(cityFilter));
+    .filter((row) => !cityFilter || normalizeSearch(row.city).includes(cityFilter))
+    .filter((row) => !productFilter || normalizeSearch(row.product).includes(productFilter));
 }
 
-function renderWeightedCityOptions() {
-  const datalist = qs("#weighted-city-options");
-  if (!datalist) return;
+function renderWeightedFilterOptions() {
+  const cityDatalist = qs("#weighted-city-options");
+  const productDatalist = qs("#weighted-product-options");
+  if (!cityDatalist && !productDatalist) return;
   const cities = Array.from(new Set(state.orders
     .map(cityFromOrder)
     .filter((city) => city && city !== "-")))
     .sort((a, b) => a.localeCompare(b, "pt-BR"));
-  datalist.innerHTML = cities
+  if (cityDatalist) cityDatalist.innerHTML = cities
     .map((city) => `<option value="${escapeAttr(city)}"></option>`)
+    .join("");
+  const products = Array.from(new Set(state.orders
+    .flatMap((order) => orderItems(order).map((item) => item.product || order.product || ""))
+    .filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b, "pt-BR"));
+  if (productDatalist) productDatalist.innerHTML = products
+    .map((product) => `<option value="${escapeAttr(product)}"></option>`)
     .join("");
 }
 
@@ -3981,20 +4188,12 @@ function renderWeightedAverageReport() {
   const detailTable = qs("#weighted-average-detail-table");
   if (!summaryTable || !detailTable) return;
 
-  renderWeightedCityOptions();
+  renderWeightedFilterOptions();
   const rows = weightedAverageOrders();
-  const grouped = new Map();
-  rows.forEach((row) => {
-    const key = normalizeSearch(row.city);
-    const item = grouped.get(key) || { city: row.city, qty: 0, total: 0 };
-    item.qty += row.qty;
-    item.total += row.total;
-    grouped.set(key, item);
-  });
-  const summary = Array.from(grouped.values()).sort((a, b) => a.city.localeCompare(b.city, "pt-BR"));
+  const summary = weightedAverageSummaryRows(rows);
 
   const counter = qs("#weighted-average-count");
-  if (counter) counter.textContent = `${summary.length} cidades`;
+  if (counter) counter.textContent = `${summary.length} medias`;
   const detailCounter = qs("#weighted-detail-count");
   if (detailCounter) detailCounter.textContent = `${rows.length} vendas`;
 
@@ -4003,14 +4202,16 @@ function renderWeightedAverageReport() {
     return `
       <tr>
         <td><strong>${escapeHtml(row.city)}</strong></td>
+        <td>${escapeHtml(row.product)}</td>
         <td class="right">${formatQty(row.qty)}</td>
         <td class="right"><strong>${money.format(row.total)}</strong></td>
+        <td class="right">${money.format(row.freight)}</td>
         <td class="right"><strong>${money.format(average)}</strong></td>
       </tr>
     `;
   }).join("") : `
     <tr>
-      <td colspan="4">Nenhuma venda encontrada para os filtros selecionados.</td>
+      <td colspan="6">Nenhuma venda encontrada para os filtros selecionados.</td>
     </tr>
   `;
 
@@ -4024,10 +4225,11 @@ function renderWeightedAverageReport() {
         <td class="right">${formatQty(row.qty)}</td>
         <td class="right">${money.format(row.unitPrice)}</td>
         <td class="right"><strong>${money.format(row.total)}</strong></td>
+        <td class="right">${money.format(row.freight)}</td>
       </tr>
     `).join("") : `
     <tr>
-      <td colspan="6">Nenhuma venda encontrada para conferir.</td>
+      <td colspan="7">Nenhuma venda encontrada para conferir.</td>
     </tr>
   `;
 }
@@ -4393,6 +4595,7 @@ function renderActiveView(viewId = activeViewId) {
     case "configuracoes":
       renderDashboardLockSettings();
       renderSalespeopleSettings();
+      renderDriversSettings();
       renderSellerCitiesSettings();
       renderPaymentRulesSettings();
       renderFreightSettings();
@@ -4400,6 +4603,7 @@ function renderActiveView(viewId = activeViewId) {
       renderUsersSettings();
       renderConfigOrders();
       renderStockAdjustmentOptions();
+      renderStockLockSettings();
       renderManualStockSettings();
       break;
     default:
@@ -4587,6 +4791,7 @@ function handleManualStockMovement(event) {
     showToast("Informe uma quantidade valida.");
     return;
   }
+  if (!assertStockDateUnlocked(date, "salvar lancamento manual")) return;
 
   const currentQuantity = Number(product.locations?.[location] || 0);
   const signedQuantity = type === "entrada"
@@ -4650,6 +4855,7 @@ function deleteManualStockMovement(entryId) {
   const location = normalizeLocation(entry.location);
   const quantity = Number(entry.quantity || 0);
   const currentQuantity = Number(product.locations?.[location] || 0);
+  if (!assertStockDateUnlocked(entry.date, "excluir lancamento manual")) return;
   if (quantity > 0 && currentQuantity < quantity) {
     showToast("Nao e possivel excluir: o estorno deixaria o estoque negativo.");
     return;
@@ -4688,6 +4894,7 @@ function handleStockAdjustment(event) {
     showToast("Informe uma quantidade maior que zero.");
     return;
   }
+  if (!assertStockDateUnlocked(today, "salvar ajuste de estoque")) return;
 
   const signedQuantity = type === "saida" ? -quantity : quantity;
   if (signedQuantity < 0 && Number(product.locations?.[location] || 0) < quantity) {
@@ -5882,6 +6089,10 @@ function sendDirectLoadQuantityToStock(stockLocation, qty) {
     showToast("Nota vinculada nao encontrada.");
     return false;
   }
+  if (entries.some((entry) => isStockDateLocked(entry.date))) {
+    showToast(`Estoque travado ate ${formatDateBR(state.stockLockDate)}. Nao e possivel mandar esta carga ao estoque nessa data.`);
+    return false;
+  }
   const groupedRows = sourceEntryGroup.length > 1 ? directLoadGroupedRows() : [];
   const allocationItems = sourceEntryGroup.length > 1 ? groupedRows.filter((item) => item.qty > 0.009) : [];
   const totalAvailable = entries.reduce((sum, entry) => sum + entryRemainingQuantity(entry), 0);
@@ -6561,6 +6772,7 @@ function updateOrderStage(orderId, nextStage) {
   let stockReversed = false;
 
   if (order.stockPosted && nextStage !== "Entregue" && !order.directLoad) {
+    if (!assertStockDateUnlocked(orderStockDate(order), "estornar a baixa deste pedido")) return;
     changeOrderItemsStock(order, 1, "Estorno de entrega");
     order.stockPosted = false;
     stockReversed = true;
@@ -6576,6 +6788,7 @@ function updateOrderStage(orderId, nextStage) {
 
   if (nextStage === "Entregue") {
     if (!order.stockPosted && !order.directLoad) {
+      if (!assertStockDateUnlocked(orderStockDate(order), "baixar este pedido")) return;
       const location = normalizeLocation(order.stockLocation);
       const stockCheck = hasStockForOrderItems(orderItems(order), location);
       if (!stockCheck.ok) {
@@ -6903,6 +7116,55 @@ function deleteSalesperson(name) {
   showToast("Vendedor excluído.");
 }
 
+function addDriver(name) {
+  const cleanName = cleanDriverName(name);
+  if (!cleanName) return;
+  if (state.drivers.some((driver) => normalizeSearch(driver) === normalizeSearch(cleanName))) {
+    showToast("Motorista ja cadastrado.");
+    return;
+  }
+  state.drivers.push(cleanName);
+  state.drivers.sort((a, b) => normalizeSearch(a).localeCompare(normalizeSearch(b)));
+  saveState();
+  saveStateToCloudNow();
+  renderAll();
+  showToast("Motorista adicionado.");
+}
+
+function saveDriver(oldName, newName) {
+  const cleanName = cleanDriverName(newName);
+  const index = state.drivers.indexOf(oldName);
+  if (index < 0 || !cleanName) return;
+  const duplicate = state.drivers.some((driver) => driver !== oldName && normalizeSearch(driver) === normalizeSearch(cleanName));
+  if (duplicate) {
+    showToast("Ja existe motorista com esse nome.");
+    return;
+  }
+  state.drivers[index] = cleanName;
+  state.drivers.sort((a, b) => normalizeSearch(a).localeCompare(normalizeSearch(b)));
+  state.orders.forEach((order) => {
+    if (normalizeSearch(order.driver) === normalizeSearch(oldName)) order.driver = cleanName;
+  });
+  state.stockEntries.forEach((entry) => {
+    if (normalizeSearch(entry.loadedBy) === normalizeSearch(oldName)) entry.loadedBy = cleanName;
+  });
+  state.notes.forEach((note) => {
+    if (normalizeSearch(note.loadedBy) === normalizeSearch(oldName)) note.loadedBy = cleanName;
+  });
+  saveState();
+  saveStateToCloudNow();
+  renderAll();
+  showToast("Motorista salvo.");
+}
+
+function deleteDriver(name) {
+  state.drivers = state.drivers.filter((driver) => driver !== name);
+  saveState();
+  saveStateToCloudNow();
+  renderAll();
+  showToast("Motorista excluido do cadastro.");
+}
+
 function addSellerCity(city, uf, salesperson) {
   const cleanCity = city.trim();
   const cleanUf = uf.trim().toUpperCase();
@@ -7107,6 +7369,10 @@ function updateStockEntryDestination(entryId, nextLocationValue) {
     renderStockEntries();
     return;
   }
+  if (!assertStockDateUnlocked(entry.date, "lancar esta nota no estoque")) {
+    renderStockEntries();
+    return;
+  }
 
   beginEntryDistribution(entry);
   let product = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
@@ -7134,6 +7400,60 @@ function updateStockEntryDestination(entryId, nextLocationValue) {
   saveStateToCloudNow();
   renderAll();
   showToast(`Saldo de ${formatQty(remaining)} lancado no estoque de ${nextLocationValue}.`);
+}
+
+function reverseStockEntryAllocation(entryId, allocationId) {
+  const entry = state.stockEntries.find((item) => item.id === entryId);
+  if (!entry) {
+    showToast("Nota fiscal nao encontrada para estorno.");
+    return;
+  }
+  const allocations = entryAllocations(entry);
+  const allocationIndex = allocations.findIndex((item) => item.id === allocationId && item.type === "stock");
+  if (allocationIndex < 0) {
+    showToast("Entrada em unidade nao encontrada para estorno.");
+    return;
+  }
+  const allocation = allocations[allocationIndex];
+  const quantity = Number(allocation.qty || 0);
+  const location = normalizeLocation(allocation.location);
+  if (!quantity || quantity <= 0 || !stockLocations.includes(location)) {
+    showToast("Entrada invalida para estorno.");
+    return;
+  }
+  if (!assertStockDateUnlocked(entry.date, "estornar esta entrada")) return;
+  if (!window.confirm(`Estornar ${formatQty(quantity)} da NF ${entry.invoice} no estoque de ${location}?`)) {
+    return;
+  }
+
+  let product = findStockProductForEntry(entry)
+    || state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+  if (product) {
+    changeProductLocationQty(product, location, -quantity);
+  }
+  allocations.splice(allocationIndex, 1);
+  if (!allocations.length) {
+    entry.distributionStarted = false;
+    entry.location = "";
+    entry.generatedOrderId = "";
+    entry.linkedOrderId = "";
+  }
+  state.movements.unshift({
+    date: today,
+    op: `Estorno da NF ${entry.invoice} do estoque ${location}`,
+    product: entry.product,
+    qty: -quantity,
+    sourceEntryId: entry.id,
+    sourceInvoice: entry.invoice || "",
+    allocationId
+  });
+  updateInvoiceDistributionStatus(entry);
+
+  saveState();
+  saveStateToCloudNow();
+  renderAll();
+  if (selectedStockProductId) renderStockLedger(selectedStockProductId);
+  showToast(`Estorno realizado. Saldo da NF ${entry.invoice} voltou a ficar disponivel.`);
 }
 
 function deleteOrder(orderId, reasonValue = "") {
@@ -7421,6 +7741,10 @@ function deleteImportedNote(noteIndex) {
     showToast("Nao e possivel excluir: esta nota esta vinculada a pedido.");
     return;
   }
+  if (entries.some((entry) => isStockDateLocked(entry.date))) {
+    showToast(`Estoque travado ate ${formatDateBR(state.stockLockDate)}. Nao e possivel excluir nota dessa data.`);
+    return;
+  }
 
   entries.forEach((entry) => {
     const product = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
@@ -7536,6 +7860,9 @@ function bindEvents() {
   qs("#daily-load-date").addEventListener("input", renderDailyLoadBoard);
   qs("#dashboard-lock-date").addEventListener("input", renderDashboardLockSettings);
   qs("#dashboard-config-lock-btn").addEventListener("click", toggleDashboardDateLock);
+  qs("#stock-lock-date")?.addEventListener("input", renderStockLockSettings);
+  qs("#save-stock-lock-btn")?.addEventListener("click", saveStockLockDate);
+  qs("#clear-stock-lock-btn")?.addEventListener("click", clearStockLockDate);
   qs("#daily-load-grid").addEventListener("change", (event) => {
     const input = event.target.closest("[data-load-panel-date]");
     if (!input) return;
@@ -7603,6 +7930,19 @@ function bindEvents() {
     if (!button) return;
     selectedStockProductId = button.dataset.stockLedger;
     renderStockLedger(selectedStockProductId);
+  });
+  qs("#stock-ledger-table").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-stock-ledger-reversal]");
+    if (!button) return;
+    event.stopPropagation();
+    const [entryId, allocationId] = button.dataset.stockLedgerReversal.split(":");
+    showStockLedgerActionMenu(button, entryId, allocationId);
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest("#stock-ledger-action-menu")
+      && !event.target.closest("[data-stock-ledger-reversal]")) {
+      closeStockLedgerActionMenu();
+    }
   });
   qs("#manual-stock-settings-table").addEventListener("click", (event) => {
     const button = event.target.closest("[data-delete-manual-stock]");
@@ -7773,6 +8113,25 @@ function bindEvents() {
       fillCustomer(customer);
       saveState();
       showToast("Cliente selecionado.");
+    }
+  });
+  qs("#sale-driver").addEventListener("input", (event) => {
+    renderDriverSearchOptions(event.target.value);
+  });
+  qs("#sale-driver").addEventListener("focus", (event) => {
+    renderDriverSearchOptions(event.target.value);
+  });
+  qs("#driver-search-results").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-select-driver]");
+    if (!button) return;
+    qs("#sale-driver").value = button.dataset.selectDriver;
+    qs("#driver-search-results").hidden = true;
+    qs("#driver-search-results").innerHTML = "";
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest("#driver-search-results") && !event.target.closest("#sale-driver")) {
+      const results = qs("#driver-search-results");
+      if (results) results.hidden = true;
     }
   });
   qs("#customer-document").addEventListener("blur", () => {
@@ -7948,12 +8307,13 @@ function bindEvents() {
   qsa("[data-report-tab-button]").forEach((button) => {
     button.addEventListener("click", () => showReportTab(button.dataset.reportTabButton));
   });
-  ["#weighted-city-filter", "#weighted-start-filter", "#weighted-end-filter"].forEach((selector) => {
+  ["#weighted-city-filter", "#weighted-product-filter", "#weighted-start-filter", "#weighted-end-filter"].forEach((selector) => {
     qs(selector).addEventListener("input", renderWeightedAverageReport);
     qs(selector).addEventListener("change", renderWeightedAverageReport);
   });
   qs("#clear-weighted-filter").addEventListener("click", () => {
     qs("#weighted-city-filter").value = "";
+    qs("#weighted-product-filter").value = "";
     qs("#weighted-start-filter").value = "";
     qs("#weighted-end-filter").value = "";
     renderWeightedAverageReport();
@@ -8160,6 +8520,21 @@ function bindEvents() {
     }
     const deleteButton = event.target.closest("[data-delete-salesperson]");
     if (deleteButton) deleteSalesperson(deleteButton.dataset.deleteSalesperson);
+  });
+  qs("#driver-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    addDriver(qs("#driver-name").value);
+    event.currentTarget.reset();
+  });
+  qs("#drivers-table").addEventListener("click", (event) => {
+    const saveButton = event.target.closest("[data-save-driver]");
+    if (saveButton) {
+      const input = qs(`[data-driver="${CSS.escape(saveButton.dataset.saveDriver)}"]`);
+      saveDriver(saveButton.dataset.saveDriver, input.value);
+      return;
+    }
+    const deleteButton = event.target.closest("[data-delete-driver]");
+    if (deleteButton) deleteDriver(deleteButton.dataset.deleteDriver);
   });
   qs("#seller-city-form").addEventListener("submit", (event) => {
     event.preventDefault();
