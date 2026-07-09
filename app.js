@@ -1649,7 +1649,7 @@ function renderDashboard() {
 
 function isInvoiceStockEntry(entry) {
   const invoice = String(entry.invoice || "");
-  return invoice && invoice !== "CADASTRO" && !invoice.startsWith("AJ-") && !invoice.startsWith("MAN-");
+  return invoice && invoice !== "CADASTRO" && !invoice.startsWith("AJ-") && !invoice.startsWith("MAN-") && !invoice.startsWith("TR-");
 }
 
 function dailyLoadCardClass(load) {
@@ -2516,6 +2516,11 @@ function renderStockAdjustmentOptions() {
   const manualSelect = qs("#manual-stock-product");
   if (adjustmentSelect) adjustmentSelect.innerHTML = adjustmentOptions;
   if (manualSelect) manualSelect.innerHTML = manualOptions;
+  const originSelect = qs("#adjust-stock-origin");
+  const destinationSelect = qs("#adjust-stock-destination");
+  if (originSelect && destinationSelect && originSelect.value === destinationSelect.value) {
+    destinationSelect.value = originSelect.value === "Divinopolis" ? "Arcos" : "Divinopolis";
+  }
 }
 
 function renderManualStockSettings() {
@@ -2589,6 +2594,8 @@ function buildStockLedger(productId) {
         document: entry.invoice,
         party: `${entry.supplier || entry.loadedBy || "-"} / ${location}`,
         location,
+        sourceEntryId: entry.id,
+        canReverseStockEntry: isInvoiceStockEntry(entry) && quantity > 0 && stockLocations.includes(location),
         manualEntryId: entry.movementType ? entry.id : "",
         isManualMovement: Boolean(entry.movementType),
         entry: quantity > 0 ? quantity : 0,
@@ -2702,6 +2709,14 @@ function renderStockLedger(productId) {
 
 function stockLedgerDocumentCell(row) {
   const documentLabel = escapeHtml(row.document || "-");
+  if (row.canReverseStockEntry && row.sourceEntryId) {
+    return `
+      <button class="ledger-doc-action" type="button"
+        data-stock-ledger-entry-reversal="${escapeAttr(row.sourceEntryId)}">
+        ${documentLabel}
+      </button>
+    `;
+  }
   if (!row.canReverseStockAllocation || !row.sourceEntryId || !row.allocationId) {
     return `<strong>${documentLabel}</strong>`;
   }
@@ -2717,7 +2732,7 @@ function closeStockLedgerActionMenu() {
   document.querySelector("#stock-ledger-action-menu")?.remove();
 }
 
-function showStockLedgerActionMenu(anchor, entryId, allocationId) {
+function showStockLedgerActionMenu(anchor, entryId, allocationId = "") {
   closeStockLedgerActionMenu();
   const menu = document.createElement("div");
   menu.id = "stock-ledger-action-menu";
@@ -2729,7 +2744,8 @@ function showStockLedgerActionMenu(anchor, entryId, allocationId) {
   menu.style.top = `${rect.bottom + window.scrollY + 6}px`;
   menu.querySelector("button").addEventListener("click", () => {
     closeStockLedgerActionMenu();
-    reverseStockEntryAllocation(entryId, allocationId);
+    if (allocationId) reverseStockEntryAllocation(entryId, allocationId);
+    else reverseStockEntryToAvailable(entryId);
   });
 }
 
@@ -4882,45 +4898,64 @@ function handleStockAdjustment(event) {
   const productId = qs("#adjust-stock-product").value;
   const product = state.stock.find((item) => item.id === productId);
   if (!product) {
-    showToast("Selecione um produto para ajustar.");
+    showToast("Selecione um produto para transferir.");
     return;
   }
 
-  const location = normalizeLocation(qs("#adjust-stock-location").value);
-  const type = qs("#adjust-stock-type").value;
+  const origin = normalizeLocation(qs("#adjust-stock-origin").value);
+  const destination = normalizeLocation(qs("#adjust-stock-destination").value);
   const quantity = Number(qs("#adjust-stock-quantity").value || 0);
-  const reason = qs("#adjust-stock-reason").value.trim() || "Ajuste manual";
+  const reason = qs("#adjust-stock-reason").value.trim() || "Transferencia entre unidades";
   if (quantity <= 0) {
     showToast("Informe uma quantidade maior que zero.");
     return;
   }
-  if (!assertStockDateUnlocked(today, "salvar ajuste de estoque")) return;
+  if (origin === destination) {
+    showToast("A origem e o destino precisam ser diferentes.");
+    return;
+  }
+  if (!assertStockDateUnlocked(today, "salvar transferencia de estoque")) return;
 
-  const signedQuantity = type === "saida" ? -quantity : quantity;
-  if (signedQuantity < 0 && Number(product.locations?.[location] || 0) < quantity) {
-    showToast("Saldo insuficiente nessa unidade para fazer a saida.");
+  if (Number(product.locations?.[origin] || 0) < quantity) {
+    showToast("Saldo insuficiente na unidade de origem para fazer a transferencia.");
     return;
   }
 
-  changeProductLocationQty(product, location, signedQuantity);
-  const invoice = `AJ-${Date.now().toString().slice(-6)}`;
-  state.stockEntries.unshift({
-    id: `ENT-${invoice}-${Math.random().toString(16).slice(2, 6)}`,
-    date: today,
-    invoice,
-    factoryOrder: reason,
-    product: product.product,
-    quantity: signedQuantity,
-    brand: product.factory || "Ajuste manual",
-    loadedBy: getLoggedUser()?.name || "Operador do sistema",
-    supplier: reason,
-    location
-  });
+  changeProductLocationQty(product, origin, -quantity);
+  changeProductLocationQty(product, destination, quantity);
+  const document = `TR-${Date.now().toString().slice(-6)}`;
+  const operator = getLoggedUser()?.name || "Operador do sistema";
+  state.stockEntries.unshift(
+    {
+      id: `ENT-${document}-DEST-${Math.random().toString(16).slice(2, 6)}`,
+      date: today,
+      invoice: document,
+      factoryOrder: reason,
+      product: product.product,
+      quantity,
+      brand: product.factory || "Transferencia",
+      loadedBy: operator,
+      supplier: `${reason} / Origem ${origin}`,
+      location: destination
+    },
+    {
+      id: `ENT-${document}-ORIG-${Math.random().toString(16).slice(2, 6)}`,
+      date: today,
+      invoice: document,
+      factoryOrder: reason,
+      product: product.product,
+      quantity: -quantity,
+      brand: product.factory || "Transferencia",
+      loadedBy: operator,
+      supplier: `${reason} / Destino ${destination}`,
+      location: origin
+    }
+  );
   state.movements.unshift({
     date: today,
-    op: `${type === "saida" ? "Ajuste saida" : "Ajuste entrada"} ${location}`,
+    op: `Transferencia ${origin} para ${destination}`,
     product: product.product,
-    qty: signedQuantity
+    qty: quantity
   });
 
   qs("#stock-adjustment-form").reset();
@@ -4928,7 +4963,7 @@ function handleStockAdjustment(event) {
   saveState();
   saveStateToCloudNow();
   renderAll();
-  showToast("Ajuste de estoque salvo.");
+  showToast("Transferencia de estoque salva.");
 }
 
 function makeProductId(productName, factory) {
@@ -7402,6 +7437,58 @@ function updateStockEntryDestination(entryId, nextLocationValue) {
   showToast(`Saldo de ${formatQty(remaining)} lancado no estoque de ${nextLocationValue}.`);
 }
 
+function reverseStockEntryToAvailable(entryId) {
+  const entry = state.stockEntries.find((item) => item.id === entryId);
+  if (!entry) {
+    showToast("Nota fiscal nao encontrada para estorno.");
+    return;
+  }
+  const quantity = Number(entry.quantity || 0);
+  const location = stockLocations.includes(entry.location) ? entry.location : "";
+  if (!isInvoiceStockEntry(entry) || entry.distributionStarted || !location || quantity <= 0) {
+    showToast("Esta entrada nao esta disponivel para estorno direto.");
+    return;
+  }
+  if (!assertStockDateUnlocked(entry.date, "estornar esta entrada")) return;
+
+  const product = findStockProductForEntry(entry)
+    || state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+  if (product && productAvailableQty(product, location) < quantity) {
+    showToast("Saldo insuficiente na unidade para estornar esta entrada.");
+    return;
+  }
+  if (!window.confirm(`Estornar ${formatQty(quantity)} da NF ${entry.invoice} no estoque de ${location}?`)) {
+    return;
+  }
+
+  if (product) changeProductLocationQty(product, location, -quantity);
+  const oldLocation = entry.location;
+  entry.location = "";
+  entry.generatedOrderId = "";
+  entry.linkedOrderId = "";
+  entry.distributionStarted = false;
+  entry.allocations = [];
+  state.movements.unshift({
+    date: today,
+    op: `Estorno da NF ${entry.invoice} do estoque ${oldLocation}`,
+    product: entry.product,
+    qty: -quantity,
+    sourceEntryId: entry.id,
+    sourceInvoice: entry.invoice || ""
+  });
+  updateInvoiceDistributionStatus(entry);
+  const entryDateFilter = qs("#stock-entry-date-filter");
+  if (entryDateFilter) entryDateFilter.value = entry.date || today;
+  const entryLinkFilter = qs("#stock-entry-link-filter");
+  if (entryLinkFilter) entryLinkFilter.value = "";
+
+  saveState();
+  saveStateToCloudNow();
+  renderAll();
+  if (selectedStockProductId) renderStockLedger(selectedStockProductId);
+  showToast(`Estorno realizado. NF ${entry.invoice} voltou para entradas disponiveis.`);
+}
+
 function reverseStockEntryAllocation(entryId, allocationId) {
   const entry = state.stockEntries.find((item) => item.id === entryId);
   if (!entry) {
@@ -7448,6 +7535,10 @@ function reverseStockEntryAllocation(entryId, allocationId) {
     allocationId
   });
   updateInvoiceDistributionStatus(entry);
+  const entryDateFilter = qs("#stock-entry-date-filter");
+  if (entryDateFilter) entryDateFilter.value = entry.date || today;
+  const entryLinkFilter = qs("#stock-entry-link-filter");
+  if (entryLinkFilter) entryLinkFilter.value = "";
 
   saveState();
   saveStateToCloudNow();
@@ -7932,15 +8023,19 @@ function bindEvents() {
     renderStockLedger(selectedStockProductId);
   });
   qs("#stock-ledger-table").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-stock-ledger-reversal]");
+    const button = event.target.closest("[data-stock-ledger-reversal], [data-stock-ledger-entry-reversal]");
     if (!button) return;
     event.stopPropagation();
+    if (button.dataset.stockLedgerEntryReversal) {
+      showStockLedgerActionMenu(button, button.dataset.stockLedgerEntryReversal);
+      return;
+    }
     const [entryId, allocationId] = button.dataset.stockLedgerReversal.split(":");
     showStockLedgerActionMenu(button, entryId, allocationId);
   });
   document.addEventListener("click", (event) => {
     if (!event.target.closest("#stock-ledger-action-menu")
-      && !event.target.closest("[data-stock-ledger-reversal]")) {
+      && !event.target.closest("[data-stock-ledger-reversal], [data-stock-ledger-entry-reversal]")) {
       closeStockLedgerActionMenu();
     }
   });
@@ -8362,6 +8457,16 @@ function bindEvents() {
     renderStockAdjustmentOptions();
     qs("#manual-stock-panel").hidden = true;
     qs("#stock-adjustment-panel").hidden = !qs("#stock-adjustment-panel").hidden;
+  });
+  qs("#adjust-stock-origin").addEventListener("change", () => {
+    const origin = qs("#adjust-stock-origin").value;
+    const destination = qs("#adjust-stock-destination");
+    if (destination.value === origin) destination.value = origin === "Divinopolis" ? "Arcos" : "Divinopolis";
+  });
+  qs("#adjust-stock-destination").addEventListener("change", () => {
+    const destination = qs("#adjust-stock-destination").value;
+    const origin = qs("#adjust-stock-origin");
+    if (origin.value === destination) origin.value = destination === "Divinopolis" ? "Arcos" : "Divinopolis";
   });
   qs("#stock-adjustment-form").addEventListener("submit", handleStockAdjustment);
   qs("#cancel-stock-adjustment").addEventListener("click", () => {

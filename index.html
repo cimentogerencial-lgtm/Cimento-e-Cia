@@ -92,37 +92,37 @@
             <option value="Divinopolis">Divinopolis</option>
             <option value="Arcos">Arcos</option>
           </select>
-          <button class="primary-btn" id="adjust-stock-btn" type="button">Ajuste de estoque</button>
+          <button class="primary-btn" id="adjust-stock-btn" type="button">Transferencia</button>
         </div>
         <section class="panel stock-adjustment-panel" id="stock-adjustment-panel" hidden>
           <div class="panel-head">
-            <h2>Ajuste de estoque</h2>
-            <span class="tag">Correcao manual</span>
+            <h2>Transferencia entre unidades</h2>
+            <span class="tag">Arcos / Divinopolis</span>
           </div>
           <form class="stock-adjustment-form" id="stock-adjustment-form">
             <label>Produto
               <select id="adjust-stock-product" required></select>
             </label>
-            <label>Unidade
-              <select id="adjust-stock-location" required>
+            <label>Origem
+              <select id="adjust-stock-origin" required>
                 <option value="Divinopolis">Divinopolis</option>
                 <option value="Arcos">Arcos</option>
               </select>
             </label>
-            <label>Tipo
-              <select id="adjust-stock-type" required>
-                <option value="entrada">Somar ao estoque</option>
-                <option value="saida">Diminuir do estoque</option>
+            <label>Destino
+              <select id="adjust-stock-destination" required>
+                <option value="Arcos">Arcos</option>
+                <option value="Divinopolis">Divinopolis</option>
               </select>
             </label>
             <label>Quantidade
               <input id="adjust-stock-quantity" type="number" min="1" value="1" required />
             </label>
             <label>Motivo
-              <input id="adjust-stock-reason" placeholder="Ex.: Conferencia, avaria, correcao" />
+              <input id="adjust-stock-reason" placeholder="Ex.: Transferencia para entrega" />
             </label>
             <div class="form-actions">
-              <button class="primary-btn" type="submit">Salvar ajuste</button>
+              <button class="primary-btn" type="submit">Salvar transferencia</button>
               <button class="secondary-btn" id="cancel-stock-adjustment" type="button">Cancelar</button>
             </div>
           </form>
