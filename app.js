@@ -3970,7 +3970,7 @@ function sellerReportData() {
 
 function freightValueForWeightedRow(row) {
   const rate = freightRateFor(row.freightType || "entrega", row.city);
-  return rate ? Number(rate.value || 0) * Number(row.qty || 0) : 0;
+  return rate ? Number(rate.value || 0) : 0;
 }
 
 function weightedAverageSummaryRows(rows = weightedAverageOrders()) {
@@ -3980,7 +3980,7 @@ function weightedAverageSummaryRows(rows = weightedAverageOrders()) {
     const item = grouped.get(key) || { city: row.city, product: row.product, qty: 0, total: 0, freight: 0 };
     item.qty += row.qty;
     item.total += row.total;
-    item.freight += row.freight;
+    item.freight = item.freight || row.freight || 0;
     grouped.set(key, item);
   });
   return Array.from(grouped.values())
@@ -4028,7 +4028,7 @@ function exportWeightedReportExcel() {
   downloadExcelWorkbook(`media-ponderada-${today}.xls`, [
     {
       name: "Media ponderada",
-      headers: ["Cidade", "Produto", "Quantidade", "Valor total", "Fretes", "Media por saco"],
+      headers: ["Cidade", "Produto", "Quantidade", "Valor total", "Frete unitario", "Preco medio"],
       rows: summaryRows.map((row) => [
         { value: row.city },
         { value: row.product },
@@ -4040,7 +4040,7 @@ function exportWeightedReportExcel() {
     },
     {
       name: "Conferencia das vendas",
-      headers: ["Data", "Cidade", "Produto", "Quantidade", "Preco unitario", "Valor total", "Frete"],
+      headers: ["Data", "Cidade", "Produto", "Quantidade", "Preco unitario", "Valor total", "Frete unitario"],
       rows: detailRows.map((row) => [
         { value: formatDateBR(row.date), className: "date" },
         { value: row.city },
@@ -4174,7 +4174,10 @@ function cityFromOrder(order) {
 
 function weightedAverageOrders() {
   const cityFilter = normalizeSearch(qs("#weighted-city-filter")?.value || "");
-  const productFilter = normalizeSearch(qs("#weighted-product-filter")?.value || "");
+  const productFilters = String(qs("#weighted-product-filter")?.value || "")
+    .split(/[;,]/)
+    .map((item) => normalizeSearch(item))
+    .filter(Boolean);
   const startFilter = qs("#weighted-start-filter")?.value || "";
   const endFilter = qs("#weighted-end-filter")?.value || "";
   return state.orders
@@ -4201,7 +4204,7 @@ function weightedAverageOrders() {
     .filter((row) => !startFilter || row.date >= startFilter)
     .filter((row) => !endFilter || row.date <= endFilter)
     .filter((row) => !cityFilter || normalizeSearch(row.city).includes(cityFilter))
-    .filter((row) => !productFilter || normalizeSearch(row.product).includes(productFilter));
+    .filter((row) => !productFilters.length || productFilters.some((productFilter) => normalizeSearch(row.product).includes(productFilter)));
 }
 
 function renderWeightedFilterOptions() {

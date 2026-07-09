@@ -984,7 +984,7 @@
               <datalist id="weighted-city-options"></datalist>
             </label>
             <label>Produto
-              <input id="weighted-product-filter" list="weighted-product-options" placeholder="Produto" />
+              <input id="weighted-product-filter" list="weighted-product-options" placeholder="Produto ou produtos separados por virgula" />
               <datalist id="weighted-product-options"></datalist>
             </label>
             <label>De
@@ -999,10 +999,11 @@
             <thead>
               <tr>
                 <th>Cidade</th>
+                <th>Produto</th>
                 <th class="right">Quantidade</th>
                 <th class="right">Valor total</th>
-                <th class="right">Fretes</th>
-                <th class="right">Media por saco</th>
+                <th class="right">Frete unitario</th>
+                <th class="right">Preco medio</th>
               </tr>
             </thead>
             <tbody id="weighted-average-table"></tbody>
@@ -1020,7 +1021,7 @@
                 <th class="right">Quantidade</th>
                 <th class="right">Preco unitario</th>
                 <th class="right">Valor total</th>
-                <th class="right">Frete</th>
+                <th class="right">Frete unitario</th>
               </tr>
             </thead>
             <tbody id="weighted-average-detail-table"></tbody>
