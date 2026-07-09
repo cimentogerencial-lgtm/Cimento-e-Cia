@@ -875,7 +875,7 @@ async function handleLogin(event) {
   const form = event.currentTarget;
   const data = new FormData(form);
   const login = String(data.get("user")).trim().toLowerCase();
-  const password = String(data.get("password") || "").trim();
+  const password = String(data.get("password") || "");
 
   if (window.CIMENTO_FIREBASE?.enabled && !login.includes("@")) {
     qs("#login-error").textContent = "Digite o e-mail cadastrado no Firebase.";
@@ -895,18 +895,17 @@ async function handleLogin(event) {
       await initFirebaseSync();
       if (!cloudReady) {
         showCloudError(`Login aceito, mas o Firestore nao conectou: ${lastCloudError || "confira regras do banco e internet"}.`);
-        await firebaseAuth.signOut();
         firebaseLoginInProgress = false;
-        return;
       }
       form.reset();
       showSystem(currentSessionUser);
-      showToast("Login seguro realizado pelo Firebase.");
+      showToast(cloudReady ? "Login seguro realizado pelo Firebase." : "Login realizado. Firebase ainda nao sincronizou.");
       firebaseLoginInProgress = false;
       return;
     } catch (error) {
       firebaseLoginInProgress = false;
       const messages = {
+        "auth/invalid-credential": "E-mail ou senha incorretos no Firebase.",
         "auth/invalid-login-credentials": "E-mail ou senha incorretos no Firebase.",
         "auth/user-not-found": "Este e-mail nao esta cadastrado no Firebase.",
         "auth/wrong-password": "Senha incorreta para este e-mail.",
@@ -946,22 +945,11 @@ function initLogin() {
   if (firebaseAuth) {
     firebaseAuth.onAuthStateChanged(async (firebaseUser) => {
       if (firebaseUser) {
-        if (!currentSessionUser && !firebaseLoginInProgress) {
-          await firebaseAuth.signOut();
-          showLogin();
-          return;
-        }
         saveLoginSession(userProfileFromEmail(firebaseUser.email));
         await initFirebaseSync();
-        if (cloudReady) {
-          showSystem(currentSessionUser);
-        } else {
-          currentSessionUser = null;
-          localStorage.removeItem("cimentoGestorUser");
-          localStorage.removeItem("cimentoGestorSession");
-          showLogin();
+        showSystem(currentSessionUser);
+        if (!cloudReady) {
           showCloudError(`Firebase nao conectou: ${lastCloudError || "confira regras, dominio e internet"}.`);
-          if (firebaseAuth.currentUser) await firebaseAuth.signOut();
         }
       } else {
         showLogin();
@@ -4825,32 +4813,28 @@ function handleManualStockMovement(event) {
     showToast("Selecione um produto cadastrado.");
     return;
   }
-  if (!Number.isFinite(quantity) || quantity < 0 || (type !== "ajuste" && quantity === 0)) {
+  if (!["entrada", "saida"].includes(type)) {
+    showToast("Selecione entrada ou saida.");
+    return;
+  }
+  if (!Number.isFinite(quantity) || quantity <= 0) {
     showToast("Informe uma quantidade valida.");
     return;
   }
   if (!assertStockDateUnlocked(date, "salvar lancamento manual")) return;
 
   const currentQuantity = Number(product.locations?.[location] || 0);
-  const signedQuantity = type === "entrada"
-    ? quantity
-    : type === "saida"
-      ? -quantity
-      : quantity - currentQuantity;
+  const signedQuantity = type === "entrada" ? quantity : -quantity;
 
   if (type === "saida" && currentQuantity < quantity) {
     showToast(`Saldo insuficiente em ${location}. Disponivel: ${formatQty(currentQuantity)}.`);
-    return;
-  }
-  if (signedQuantity === 0) {
-    showToast("O saldo informado ja e o saldo atual.");
     return;
   }
 
   changeProductLocationQty(product, location, signedQuantity);
   const document = nextManualStockDocument();
   const entryId = `ENT-${document}-${Math.random().toString(16).slice(2, 6)}`;
-  const movementLabel = type === "entrada" ? "Entrada manual" : type === "saida" ? "Saida manual" : "Ajuste manual";
+  const movementLabel = type === "entrada" ? "Entrada manual" : "Saida manual";
   state.stockEntries.unshift({
     id: entryId,
     date,

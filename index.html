@@ -1284,13 +1284,12 @@
               </label>
               <label>Movimento
                 <select id="manual-stock-type" required>
-                  <option value="entrada">Entrada</option>
-                  <option value="saida">Saida</option>
-                  <option value="ajuste">Ajuste de saldo</option>
+                  <option value="entrada">Entrada - aumentar saldo</option>
+                  <option value="saida">Saida - diminuir saldo</option>
                 </select>
               </label>
-              <label>Quantidade / novo saldo
-                <input id="manual-stock-quantity" type="number" min="0" step="1" required />
+              <label>Quantidade
+                <input id="manual-stock-quantity" type="number" min="1" step="1" required />
               </label>
               <label>Observação
                 <input id="manual-stock-reason" placeholder="Motivo do lançamento" />
