@@ -271,7 +271,7 @@ if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
 state.deletedOrders = Array.isArray(state.deletedOrders) ? state.deletedOrders : [];
 state.reusableOrderIds = Array.isArray(state.reusableOrderIds) ? state.reusableOrderIds : [];
 state.drivers = Array.isArray(state.drivers)
-  ? Array.from(new Set(state.drivers.map((driver) => cleanDriverName(driver)).filter(Boolean)))
+  ? cleanDriverOptions(state.drivers)
   : [];
 state.freightRates = Array.isArray(state.freightRates) ? state.freightRates.map((rate, index) => ({
   id: rate.id || `frete-${Date.now()}-${index}`,
@@ -1773,13 +1773,12 @@ function buildWarehouseOrderLoad(order) {
 }
 
 function driverOptions() {
-  const names = [
-    ...state.drivers.map((driver) => cleanDriverName(driver)),
-    ...state.stockEntries.map((entry) => cleanDriverName(entry.loadedBy)),
-    ...state.notes.map((note) => cleanDriverName(note.loadedBy)),
-    ...state.orders.map((order) => cleanDriverName(order.driver))
-  ].filter(Boolean);
-  return Array.from(new Set(names)).sort((a, b) => normalizeSearch(a).localeCompare(normalizeSearch(b)));
+  return cleanDriverOptions([
+    ...state.drivers,
+    ...state.stockEntries.map((entry) => entry.loadedBy),
+    ...state.notes.map((note) => note.loadedBy),
+    ...state.orders.map((order) => order.driver)
+  ]);
 }
 
 function driverSearchOptions(searchValue = "") {
@@ -5520,7 +5519,31 @@ function escapeAttr(value) {
 function cleanDriverName(value) {
   return String(value || "")
     .replace(/^(motorista|carregado por|quem carregou|condutor)\s*[:\-]?\s*/i, "")
+    .replace(/\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b/g, "")
+    .replace(/\s+/g, " ")
     .trim();
+}
+
+function isUsefulDriverName(value) {
+  const name = cleanDriverName(value);
+  if (!name) return false;
+  const normalized = normalizeSearch(name);
+  if (["fiscal", "nao informado", "nao informado.", "operador do sistema"].includes(normalized)) return false;
+  return name.split(/\s+/).filter(Boolean).length >= 2;
+}
+
+function cleanDriverOptions(values) {
+  const cleaned = (values || [])
+    .map((value) => cleanDriverName(value))
+    .filter(isUsefulDriverName);
+  const byKey = new Map();
+  cleaned.forEach((name) => {
+    const key = normalizeSearch(name);
+    const current = byKey.get(key);
+    if (!current || name.length > current.length) byKey.set(key, name);
+  });
+  return Array.from(byKey.values())
+    .sort((a, b) => normalizeSearch(a).localeCompare(normalizeSearch(b)));
 }
 
 function cleanOvNumber(value) {
@@ -7181,12 +7204,16 @@ function deleteSalesperson(name) {
 function addDriver(name) {
   const cleanName = cleanDriverName(name);
   if (!cleanName) return;
+  if (!isUsefulDriverName(cleanName)) {
+    showToast("Informe o nome completo do motorista.");
+    return;
+  }
   if (state.drivers.some((driver) => normalizeSearch(driver) === normalizeSearch(cleanName))) {
     showToast("Motorista ja cadastrado.");
     return;
   }
   state.drivers.push(cleanName);
-  state.drivers.sort((a, b) => normalizeSearch(a).localeCompare(normalizeSearch(b)));
+  state.drivers = cleanDriverOptions(state.drivers);
   saveState();
   saveStateToCloudNow();
   renderAll();
@@ -7197,13 +7224,17 @@ function saveDriver(oldName, newName) {
   const cleanName = cleanDriverName(newName);
   const index = state.drivers.indexOf(oldName);
   if (index < 0 || !cleanName) return;
+  if (!isUsefulDriverName(cleanName)) {
+    showToast("Informe o nome completo do motorista.");
+    return;
+  }
   const duplicate = state.drivers.some((driver) => driver !== oldName && normalizeSearch(driver) === normalizeSearch(cleanName));
   if (duplicate) {
     showToast("Ja existe motorista com esse nome.");
     return;
   }
   state.drivers[index] = cleanName;
-  state.drivers.sort((a, b) => normalizeSearch(a).localeCompare(normalizeSearch(b)));
+  state.drivers = cleanDriverOptions(state.drivers);
   state.orders.forEach((order) => {
     if (normalizeSearch(order.driver) === normalizeSearch(oldName)) order.driver = cleanName;
   });
