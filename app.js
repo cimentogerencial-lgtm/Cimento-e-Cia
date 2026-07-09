@@ -1808,6 +1808,16 @@ function renderDriverSearchOptions(searchValue = "") {
 
 function renderDriverOptions() {
   const options = driverOptions();
+  const saleDriverSelect = qs("#sale-driver");
+  if (saleDriverSelect) {
+    const current = saleDriverSelect.value || "";
+    const saleOptions = current && !options.includes(current) ? [current, ...options] : options;
+    saleDriverSelect.innerHTML = [
+      `<option value="">Selecione o motorista</option>`,
+      ...saleOptions.map((name) => `<option value="${escapeAttr(name)}">${name}</option>`)
+    ].join("");
+    saleDriverSelect.value = saleOptions.includes(current) ? current : "";
+  }
   const tripSelect = qs("#trip-report-driver");
   if (tripSelect) {
     const current = tripSelect.value || "";
@@ -4648,6 +4658,7 @@ function renderCommonFastParts() {
   renderSaleProductOptions();
   renderCustomerSalespersonOptions();
   renderPaymentMethods();
+  renderDriverOptions();
 }
 
 function renderAll() {
@@ -8226,25 +8237,6 @@ function bindEvents() {
       fillCustomer(customer);
       saveState();
       showToast("Cliente selecionado.");
-    }
-  });
-  qs("#sale-driver").addEventListener("input", (event) => {
-    renderDriverSearchOptions(event.target.value);
-  });
-  qs("#sale-driver").addEventListener("focus", (event) => {
-    renderDriverSearchOptions(event.target.value);
-  });
-  qs("#driver-search-results").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-select-driver]");
-    if (!button) return;
-    qs("#sale-driver").value = button.dataset.selectDriver;
-    qs("#driver-search-results").hidden = true;
-    qs("#driver-search-results").innerHTML = "";
-  });
-  document.addEventListener("click", (event) => {
-    if (!event.target.closest("#driver-search-results") && !event.target.closest("#sale-driver")) {
-      const results = qs("#driver-search-results");
-      if (results) results.hidden = true;
     }
   });
   qs("#customer-document").addEventListener("blur", () => {

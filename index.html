@@ -467,9 +467,10 @@
                 <select name="salesperson" id="salesperson" required></select>
               </label>
               <label>Motorista
-                <input name="driver" id="sale-driver" autocomplete="off" placeholder="Nome do motorista" />
+                <select name="driver" id="sale-driver">
+                  <option value="">Selecione o motorista</option>
+                </select>
               </label>
-              <div class="driver-search-results" id="driver-search-results" hidden></div>
               <input name="freightType" id="sale-freight-type" type="hidden" value="entrega" />
               <button class="secondary-btn freight-return-btn" id="toggle-freight-return" type="button" aria-pressed="false">Marcar frete de retorno</button>
               <div class="last-sale-info">
