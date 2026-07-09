@@ -176,6 +176,8 @@ const state = {
   movements: []
 };
 const emptyStateTemplate = JSON.parse(JSON.stringify(state));
+const financePageSize = 50;
+let financeCurrentPage = 1;
 
 const customerBatchImportVersion = "clientes-7-planilhas-2026-06-23-v2";
 const freightRatesImportVersion = "fretes-entrega-retorno-2026-06-22-v1";
@@ -1644,8 +1646,14 @@ function statusClass(status) {
 function renderDashboard() {
   const openSales = state.receivables.reduce((sum, item) => sum + receivableBalance(item), 0);
   const received = state.receivables.reduce((sum, item) => sum + Number(item.paidValue || 0), 0);
+  const overdue = state.receivables.reduce((sum, item) => {
+    const balance = receivableBalance(item);
+    return balance > 0 && item.due && item.due < today ? sum + balance : sum;
+  }, 0);
 
   qs("#finance-open").textContent = money.format(openSales);
+  const financeOverdue = qs("#finance-overdue");
+  if (financeOverdue) financeOverdue.textContent = money.format(overdue);
   const financePaid = qs("#finance-paid");
   if (financePaid) financePaid.textContent = money.format(received);
 
@@ -3618,10 +3626,25 @@ function renderReceivables() {
   const valueTotal = receivables.reduce((sum, item) => sum + Number(item.value || 0), 0);
   const paidTotal = receivables.reduce((sum, item) => sum + Number(item.paidValue || 0), 0);
   const balanceTotal = receivables.reduce((sum, item) => sum + receivableBalance(item), 0);
+  const totalPages = Math.max(1, Math.ceil(receivables.length / financePageSize));
+  financeCurrentPage = Math.min(Math.max(1, financeCurrentPage), totalPages);
+  const pageStart = (financeCurrentPage - 1) * financePageSize;
+  const pageRows = receivables.slice(pageStart, pageStart + financePageSize);
+  const pageEnd = receivables.length ? pageStart + pageRows.length : 0;
   qs("#finance-value-total").textContent = money.format(valueTotal);
   qs("#finance-paid-total").textContent = money.format(paidTotal);
   qs("#finance-balance-total").textContent = money.format(balanceTotal);
-  qs("#receivables-table").innerHTML = receivables.map((item) => {
+  const pageInfo = qs("#finance-page-info");
+  if (pageInfo) pageInfo.textContent = receivables.length
+    ? `${pageStart + 1} - ${pageEnd} de ${receivables.length} recebimentos`
+    : "0 recebimentos";
+  const pageLabel = qs("#finance-page-label");
+  if (pageLabel) pageLabel.textContent = `Pagina ${financeCurrentPage} de ${totalPages}`;
+  const prevButton = qs("#finance-prev-page");
+  if (prevButton) prevButton.disabled = financeCurrentPage <= 1;
+  const nextButton = qs("#finance-next-page");
+  if (nextButton) nextButton.disabled = financeCurrentPage >= totalPages;
+  qs("#receivables-table").innerHTML = pageRows.map((item) => {
     const paidValue = Number(item.paidValue || 0);
     const balance = receivableBalance(item);
     const isSettled = item.status === "Recebido";
@@ -3661,7 +3684,7 @@ function renderReceivables() {
   `;
   }).join("") || `
     <tr>
-      <td colspan="11" class="center muted">Nenhum recebimento encontrado para os filtros selecionados.</td>
+      <td colspan="10" class="center muted">Nenhum recebimento encontrado para os filtros selecionados.</td>
     </tr>
   `;
   renderPaymentMethods();
@@ -8400,8 +8423,24 @@ function bindEvents() {
     "#finance-filter-status"
   ].forEach((selector) => {
     const field = qs(selector);
-    field.addEventListener("input", renderReceivables);
-    field.addEventListener("change", renderReceivables);
+    field.addEventListener("input", () => {
+      financeCurrentPage = 1;
+      renderReceivables();
+    });
+    field.addEventListener("change", () => {
+      financeCurrentPage = 1;
+      renderReceivables();
+    });
+  });
+  qs("#finance-prev-page")?.addEventListener("click", () => {
+    if (financeCurrentPage > 1) {
+      financeCurrentPage -= 1;
+      renderReceivables();
+    }
+  });
+  qs("#finance-next-page")?.addEventListener("click", () => {
+    financeCurrentPage += 1;
+    renderReceivables();
   });
   qs("#clear-finance-filter").addEventListener("click", () => {
     [
@@ -8415,6 +8454,7 @@ function bindEvents() {
     ].forEach((selector) => {
       qs(selector).value = "";
     });
+    financeCurrentPage = 1;
     renderReceivables();
   });
   qs("#omie-boletos-table").addEventListener("change", (event) => {

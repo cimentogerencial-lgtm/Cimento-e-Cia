@@ -739,21 +739,31 @@ th,
   color: #7a5310;
 }
 
-.dashboard-lock-settings {
+.dashboard-lock-settings,
+.stock-lock-settings {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
   gap: 12px;
   align-items: end;
+  max-width: 820px;
+  margin-bottom: 18px;
+}
+
+.dashboard-lock-settings {
+  grid-template-columns: minmax(220px, 1fr) auto;
   max-width: 620px;
 }
 
-.dashboard-lock-settings label {
+.dashboard-lock-settings label,
+.stock-lock-settings label {
   display: grid;
   gap: 6px;
 }
 
 .dashboard-lock-settings input,
-.dashboard-lock-settings button {
+.dashboard-lock-settings button,
+.stock-lock-settings input,
+.stock-lock-settings button {
   min-height: 42px;
 }
 
@@ -1212,6 +1222,37 @@ th {
   font-weight: 700;
 }
 
+.ledger-doc-action {
+  border: 0;
+  background: transparent;
+  color: #075f40;
+  padding: 0;
+  font: inherit;
+  font-weight: 800;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.stock-ledger-action-menu {
+  position: absolute;
+  z-index: 50;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 8px;
+}
+
+.stock-ledger-action-menu button {
+  border: 0;
+  border-radius: 7px;
+  background: var(--danger);
+  color: #fff;
+  font-weight: 800;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
 .stock-adjustment-form {
   display: grid;
   grid-template-columns: minmax(220px, 2fr) minmax(140px, 1fr) minmax(150px, 1fr) minmax(120px, 1fr) minmax(220px, 2fr);
@@ -1255,6 +1296,62 @@ th {
   min-width: 0;
   table-layout: fixed;
   font-size: 1rem;
+}
+
+#financeiro .finance-receivables-wrap {
+  max-height: 620px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+#financeiro .finance-receivables-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fff;
+}
+
+#financeiro .finance-table-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) minmax(360px, 2fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-top: 2px solid var(--brand-dark);
+  background: #eef3ef;
+  color: var(--brand-dark);
+  font-weight: 800;
+}
+
+#financeiro .finance-total-strip {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  white-space: nowrap;
+}
+
+#financeiro .finance-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+#financeiro .finance-pagination .secondary-btn {
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+#financeiro .finance-pagination .secondary-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 #financeiro .finance-receivables-table th,
@@ -1453,11 +1550,13 @@ th {
 
 .sale-customer-section h3,
 .sale-customer-section .lookup-row,
-.customer-search-results {
+.customer-search-results,
+.driver-search-results {
   grid-column: 1 / -1;
 }
 
-.customer-search-results {
+.customer-search-results,
+.driver-search-results {
   display: grid;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1466,7 +1565,8 @@ th {
   box-shadow: var(--shadow);
 }
 
-.customer-search-results[hidden] {
+.customer-search-results[hidden],
+.driver-search-results[hidden] {
   display: none;
 }
 

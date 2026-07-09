@@ -683,7 +683,7 @@
           </article>
           <article class="metric">
             <span>Inadimplencia</span>
-            <strong>R$ 0,00</strong>
+            <strong id="finance-overdue">R$ 0,00</strong>
           </article>
         </div>
         <section class="panel finance-accounts-panel" hidden>
@@ -819,33 +819,38 @@
             </label>
             <button class="secondary-btn" id="clear-finance-filter" type="button">Limpar filtros</button>
           </div>
-          <table class="nowrap-table finance-receivables-table">
-            <thead>
-              <tr>
-                <th>Vencimento</th>
-                <th>Pedido</th>
-                <th>Cliente</th>
-                <th>Forma</th>
-                <th class="right">Valor</th>
-                <th class="right">Pago</th>
-                <th>Data pagamento</th>
-                <th class="right">Saldo</th>
-                <th>Status</th>
-                <th>Recebimento</th>
-              </tr>
-            </thead>
-            <tbody id="receivables-table"></tbody>
-            <tfoot class="finance-totals-row">
-              <tr>
-                <th colspan="4">Totais dos resultados</th>
-                <th class="right" id="finance-value-total">R$ 0,00</th>
-                <th class="right" id="finance-paid-total">R$ 0,00</th>
-                <th></th>
-                <th class="right" id="finance-balance-total">R$ 0,00</th>
-                <th colspan="2"></th>
-              </tr>
-            </tfoot>
-          </table>
+          <div class="finance-receivables-wrap">
+            <table class="nowrap-table finance-receivables-table">
+              <thead>
+                <tr>
+                  <th>Vencimento</th>
+                  <th>Pedido</th>
+                  <th>Cliente</th>
+                  <th>Forma</th>
+                  <th class="right">Valor</th>
+                  <th class="right">Pago</th>
+                  <th>Data pagamento</th>
+                  <th class="right">Saldo</th>
+                  <th>Status</th>
+                  <th>Recebimento</th>
+                </tr>
+              </thead>
+              <tbody id="receivables-table"></tbody>
+            </table>
+            <div class="finance-table-footer">
+              <span id="finance-page-info">0 recebimentos</span>
+              <div class="finance-total-strip">
+                <strong>Valor: <span id="finance-value-total">R$ 0,00</span></strong>
+                <strong>Pago: <span id="finance-paid-total">R$ 0,00</span></strong>
+                <strong>Saldo: <span id="finance-balance-total">R$ 0,00</span></strong>
+              </div>
+              <div class="finance-pagination">
+                <button class="secondary-btn" id="finance-prev-page" type="button">Anterior</button>
+                <span id="finance-page-label">Pagina 1 de 1</span>
+                <button class="secondary-btn" id="finance-next-page" type="button">Proxima</button>
+              </div>
+            </div>
+          </div>
         </section>
       </section>
 
