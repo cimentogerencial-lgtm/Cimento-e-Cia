@@ -1488,6 +1488,11 @@ function normalizeLocation(value) {
   return stockLocations.find((location) => normalizeSearch(location) === normalized) || "Divinopolis";
 }
 
+function normalizeStockLocationOrBlank(value) {
+  const normalized = normalizeSearch(value);
+  return stockLocations.find((location) => normalizeSearch(location) === normalized) || "";
+}
+
 function syncProductTotal(product) {
   product.locations = product.locations || makeEmptyLocations();
   stockLocations.forEach((location) => {
@@ -2579,9 +2584,10 @@ function buildStockLedger(productId) {
             exit: 0
           }));
       }
-      if (selectedLocation && normalizeLocation(entry.location) !== selectedLocation) return [];
       const quantity = Number(entry.quantity || 0);
-      const location = normalizeLocation(entry.location);
+      const location = normalizeStockLocationOrBlank(entry.location);
+      if (!location) return [];
+      if (selectedLocation && location !== selectedLocation) return [];
       return [{
         date: entry.date,
         type: entry.movementType === "entrada"
@@ -2595,7 +2601,7 @@ function buildStockLedger(productId) {
         party: `${entry.supplier || entry.loadedBy || "-"} / ${location}`,
         location,
         sourceEntryId: entry.id,
-        canReverseStockEntry: isInvoiceStockEntry(entry) && quantity > 0 && stockLocations.includes(location),
+        canReverseStockEntry: isInvoiceStockEntry(entry) && quantity > 0 && stockLocations.includes(normalizeStockLocationOrBlank(entry.location)),
         manualEntryId: entry.movementType ? entry.id : "",
         isManualMovement: Boolean(entry.movementType),
         entry: quantity > 0 ? quantity : 0,
@@ -3076,9 +3082,19 @@ function updateInvoiceDistributionStatus(entry) {
     && normalizeSearch(item.supplier) === supplier);
   const complete = invoiceEntries.length > 0
     && invoiceEntries.every((item) => item.distributionStarted && entryRemainingQuantity(item) <= 0.009);
+  const hasDestination = invoiceEntries.some((item) => {
+    const allocations = entryAllocations(item);
+    return allocations.some((allocation) => allocation.type === "order" || allocation.type === "stock")
+      || Boolean(item.generatedOrderId || item.linkedOrderId)
+      || (!item.distributionStarted && stockLocations.includes(normalizeStockLocationOrBlank(item.location)));
+  });
   state.notes.forEach((note) => {
     if (note.number === entry.invoice && normalizeSearch(note.supplier) === supplier) {
-      note.status = complete ? "Distribuição concluida" : "Distribuição pendente";
+      note.status = complete
+        ? "Distribuição concluida"
+        : hasDestination
+          ? "Distribuição pendente"
+          : "Importada";
       note.location = "";
     }
   });
@@ -7444,7 +7460,7 @@ function reverseStockEntryToAvailable(entryId) {
     return;
   }
   const quantity = Number(entry.quantity || 0);
-  const location = stockLocations.includes(entry.location) ? entry.location : "";
+  const location = normalizeStockLocationOrBlank(entry.location);
   if (!isInvoiceStockEntry(entry) || entry.distributionStarted || !location || quantity <= 0) {
     showToast("Esta entrada nao esta disponivel para estorno direto.");
     return;
@@ -7462,10 +7478,12 @@ function reverseStockEntryToAvailable(entryId) {
   }
 
   if (product) changeProductLocationQty(product, location, -quantity);
-  const oldLocation = entry.location;
+  const oldLocation = location;
   entry.location = "";
   entry.generatedOrderId = "";
   entry.linkedOrderId = "";
+  entry.stockPosted = false;
+  entry.destination = "";
   entry.distributionStarted = false;
   entry.allocations = [];
   state.movements.unshift({
@@ -8027,11 +8045,11 @@ function bindEvents() {
     if (!button) return;
     event.stopPropagation();
     if (button.dataset.stockLedgerEntryReversal) {
-      showStockLedgerActionMenu(button, button.dataset.stockLedgerEntryReversal);
+      reverseStockEntryToAvailable(button.dataset.stockLedgerEntryReversal);
       return;
     }
     const [entryId, allocationId] = button.dataset.stockLedgerReversal.split(":");
-    showStockLedgerActionMenu(button, entryId, allocationId);
+    reverseStockEntryAllocation(entryId, allocationId);
   });
   document.addEventListener("click", (event) => {
     if (!event.target.closest("#stock-ledger-action-menu")
