@@ -53,12 +53,12 @@ function makeEmptyLocations() {
 }
 
 const users = [
-  { user: "ana", password: "1234", name: "Ana Luisa", role: "Gestao" },
-  { user: "camila", password: "1234", name: "Camila", role: "Vendas" },
-  { user: "tiago", password: "1234", name: "Tiago", role: "Estoque" },
-  { user: "laiz", password: "1234", name: "Laiz", role: "Financeiro" },
-  { user: "juliana", password: "1234", name: "Juliana", role: "Logistica" },
-  { user: "miriam", password: "1234", name: "Miriam", role: "Gerencia" }
+  { user: "ana", name: "Ana Luisa", role: "Gestao" },
+  { user: "camila", name: "Camila", role: "Vendas" },
+  { user: "tiago", name: "Tiago", role: "Estoque" },
+  { user: "laiz", name: "Laiz", role: "Financeiro" },
+  { user: "juliana", name: "Juliana", role: "Logistica" },
+  { user: "miriam", name: "Miriam", role: "Gerencia" }
 ];
 
 const permissionModules = [
@@ -87,7 +87,6 @@ function serializeUsersConfig() {
   return users.map((item) => ({
     user: item.user,
     name: item.name,
-    password: item.password,
     permissions: item.permissions || defaultPermissions()
   }));
 }
@@ -97,7 +96,6 @@ function applyUsersConfig(savedUsers) {
   users.forEach((user) => {
     const saved = savedUsers.find((item) => item.user === user.user);
     if (saved?.name) user.name = saved.name;
-    if (saved?.password) user.password = saved.password;
     user.permissions = { ...defaultPermissions(), ...(saved?.permissions || {}) };
   });
 }
@@ -267,6 +265,7 @@ if (savedState) {
 }
 if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
   applyUsersConfig(state.usersConfig);
+  syncUsersConfigToState();
 } else {
   syncUsersConfigToState();
 }
@@ -634,6 +633,7 @@ function applyCloudStateWithLocalBackup(cloudState, _localState) {
   );
   if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
     applyUsersConfig(state.usersConfig);
+    syncUsersConfigToState();
   } else {
     syncUsersConfigToState();
   }
@@ -877,7 +877,12 @@ async function handleLogin(event) {
   const login = String(data.get("user")).trim().toLowerCase();
   const password = String(data.get("password") || "").trim();
 
-  if (window.CIMENTO_FIREBASE?.enabled && login.includes("@") && (!firebaseReady || !firebaseAuth)) {
+  if (window.CIMENTO_FIREBASE?.enabled && !login.includes("@")) {
+    qs("#login-error").textContent = "Digite o e-mail cadastrado no Firebase.";
+    return;
+  }
+
+  if (window.CIMENTO_FIREBASE?.enabled && (!firebaseReady || !firebaseAuth)) {
     showCloudError("Firebase nao carregou. Publique a versao atual e confira a internet.");
     return;
   }
@@ -916,41 +921,7 @@ async function handleLogin(event) {
     }
   }
 
-  const emergencyLogin = (login === "ana" || login === "fiscal") && password === "1234";
-  if (emergencyLogin) {
-    const user = {
-      user: login,
-      password: "1234",
-      name: login === "fiscal" ? "Fiscal" : "Ana Luisa",
-      role: "Gestao",
-      permissions: defaultPermissions()
-    };
-    saveLoginSession(user);
-    form.reset();
-    showSystem(user);
-    showToast("Acesso de recuperacao local liberado. Nao use para lancamentos reais.");
-    return;
-  }
-
-  if (window.CIMENTO_FIREBASE?.enabled) {
-    qs("#login-error").textContent = "Use o e-mail e a senha cadastrados no Firebase.";
-    return;
-  }
-
-  const user = users.find((item) => {
-    return (item.user === login || item.name.toLowerCase() === login) && item.password === password;
-  });
-
-  if (!user) {
-    qs("#login-error").textContent = firebaseReady
-      ? "Digite o e-mail e senha cadastrados no Firebase."
-      : "Nome exibido ou senha invalidos.";
-    return;
-  }
-
-  saveLoginSession(user);
-  form.reset();
-  showSystem(user);
+  qs("#login-error").textContent = "Login local desativado por seguranca. Use o Firebase Auth.";
 }
 
 async function logout() {
@@ -1012,7 +983,6 @@ function renderUsersSettings() {
   qs("#users-settings-table").innerHTML = users.map((user) => `
     <tr>
       <td><input class="settings-input" data-config-name="${user.user}" value="${user.name}" /></td>
-      <td><input class="settings-input settings-password-input" data-config-password="${user.user}" value="${user.password}" /></td>
       <td class="right"><button class="stage-btn" type="button" data-save-user="${user.user}">Salvar</button></td>
     </tr>
   `).join("");
@@ -8595,16 +8565,14 @@ function bindEvents() {
   qs("#users-settings-table").addEventListener("click", (event) => {
     const button = event.target.closest("[data-save-user]");
     if (!button) return;
-    const user = users.find((item) => item.user === button.dataset.saveUser);
-    if (!user) return;
-    const nameInput = qs(`[data-config-name="${user.user}"]`);
-    const passwordInput = qs(`[data-config-password="${user.user}"]`);
-    user.name = nameInput.value.trim() || user.user;
-    user.password = passwordInput.value.trim() || "1234";
-    saveUsersConfig();
-    refreshCurrentUserLabel();
-    showToast(`Acesso de ${user.name} salvo.`);
-  });
+  const user = users.find((item) => item.user === button.dataset.saveUser);
+  if (!user) return;
+  const nameInput = qs(`[data-config-name="${user.user}"]`);
+  user.name = nameInput.value.trim() || user.user;
+  saveUsersConfig();
+  refreshCurrentUserLabel();
+  showToast(`Acesso de ${user.name} salvo.`);
+});
   qs("#user-permissions-table").addEventListener("click", (event) => {
     const button = event.target.closest("[data-save-permissions]");
     if (!button) return;
