@@ -2222,9 +2222,9 @@ function renderStock() {
   const stockBody = qs("#stock-table");
   const stockHeader = stockBody.closest("table")?.querySelector("thead tr");
   const rows = state.stock.filter((item) => {
-    syncProductTotal(item);
+    const balance = syncProductBalanceFromLedger(item);
     const matchesTerm = [item.product, item.factory, item.batch].some((field) => field.toLowerCase().includes(term));
-    const matchesLocation = !locationFilter || Number(item.locations?.[locationFilter] || 0) > 0;
+    const matchesLocation = !locationFilter || Number(balance[locationFilter] || 0) > 0;
     return matchesTerm && matchesLocation;
   });
 
@@ -2245,7 +2245,8 @@ function renderStock() {
   }
 
   stockBody.innerHTML = rows.map((item) => {
-    const selectedQty = locationFilter ? Number(item.locations?.[locationFilter] || 0) : item.qty;
+    const balance = syncProductBalanceFromLedger(item);
+    const selectedQty = locationFilter ? Number(balance[locationFilter] || 0) : balance.total;
     if (locationFilter) {
       return `
         <tr>
@@ -2261,9 +2262,9 @@ function renderStock() {
       <tr>
         <td><strong>${item.product}</strong></td>
         <td>${item.factory}</td>
-        <td class="right">${formatQty(item.locations?.["Divinopolis"] || 0)}</td>
-        <td class="right">${formatQty(item.locations?.["Arcos"] || 0)}</td>
-        <td class="right">${formatQty(item.qty)}</td>
+        <td class="right">${formatQty(balance.Divinopolis)}</td>
+        <td class="right">${formatQty(balance.Arcos)}</td>
+        <td class="right">${formatQty(balance.total)}</td>
         <td class="right"><button class="stock-detail-btn" type="button" data-stock-ledger="${item.id}">Detalhar</button></td>
       </tr>
     `;
@@ -2286,8 +2287,8 @@ function renderSaleProductOptions() {
   const previousValue = productSelect.value;
   const lockedValue = saleLockedProductId(previousValue);
   productSelect.innerHTML = state.stock.length ? state.stock.map((item) => {
-    syncProductTotal(item);
-    return `<option value="${item.id}">${item.product} - ${saleLocation}: ${formatQty(item.locations?.[saleLocation] || 0)}</option>`;
+    const balance = syncProductBalanceFromLedger(item);
+    return `<option value="${item.id}">${item.product} - ${saleLocation}: ${formatQty(balance[saleLocation] || 0)}</option>`;
   }).join("") : `<option value="">Nenhum produto cadastrado</option>`;
   const desiredValue = productSelect.disabled && lockedValue ? lockedValue : previousValue;
   if (desiredValue && Array.from(productSelect.options).some((option) => option.value === desiredValue)) {
@@ -2302,9 +2303,9 @@ function renderSaleProductOptions() {
 function saleProductOptionsHtml(selectedId = "") {
   const saleLocation = normalizeLocation(qs("#sale-stock-location")?.value || "Divinopolis");
   return state.stock.length ? state.stock.map((item) => {
-    syncProductTotal(item);
+    const balance = syncProductBalanceFromLedger(item);
     const selected = item.id === selectedId ? "selected" : "";
-    return `<option value="${item.id}" ${selected}>${escapeHtml(item.product)} - ${saleLocation}: ${formatQty(item.locations?.[saleLocation] || 0)}</option>`;
+    return `<option value="${item.id}" ${selected}>${escapeHtml(item.product)} - ${saleLocation}: ${formatQty(balance[saleLocation] || 0)}</option>`;
   }).join("") : `<option value="">Nenhum produto cadastrado</option>`;
 }
 
@@ -2532,10 +2533,12 @@ function renderManualStockSettings() {
   `;
 }
 
-function buildStockLedger(productId) {
+function buildStockLedger(productId, locationOverride) {
   const product = state.stock.find((item) => item.id === productId);
   if (!product) return { product: null, rows: [], entries: 0, exits: 0, balance: 0 };
-  const selectedLocation = qs("#stock-location-filter")?.value || "";
+  const selectedLocation = locationOverride !== undefined
+    ? locationOverride
+    : qs("#stock-location-filter")?.value || "";
 
   const entries = state.stockEntries
     .filter((entry) => entry.product === product.product)
@@ -2621,6 +2624,24 @@ function buildStockLedger(productId) {
     exits: exits.reduce((sum, row) => sum + row.exit, 0),
     balance,
     selectedLocation
+  };
+}
+
+function syncProductBalanceFromLedger(product) {
+  if (!product) return { Divinopolis: 0, Arcos: 0, total: 0 };
+  product.locations = product.locations || makeEmptyLocations();
+  const balances = stockLocations.reduce((result, location) => {
+    result[location] = buildStockLedger(product.id, location).balance;
+    return result;
+  }, {});
+  stockLocations.forEach((location) => {
+    product.locations[location] = balances[location];
+  });
+  product.qty = stockLocations.reduce((sum, location) => sum + Number(product.locations[location] || 0), 0);
+  return {
+    Divinopolis: Number(product.locations.Divinopolis || 0),
+    Arcos: Number(product.locations.Arcos || 0),
+    total: Number(product.qty || 0)
   };
 }
 
