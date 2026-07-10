@@ -2541,26 +2541,36 @@ function buildStockLedger(productId, locationOverride) {
     : qs("#stock-location-filter")?.value || "";
 
   const entries = state.stockEntries
-    .filter((entry) => entry.product === product.product)
+    .filter((entry) => {
+      const sameProductId = entry.productId && entry.productId === product.id;
+      const sameProductName = normalizeSearch(entry.product) === normalizeSearch(product.product);
+      return sameProductId || sameProductName;
+    })
     .flatMap((entry) => {
       if (entry.distributionStarted) {
         return entryAllocations(entry)
-          .filter((allocation) => allocation.type === "stock"
-            && (!selectedLocation || allocation.location === selectedLocation))
-          .map((allocation) => ({
-            date: entry.date,
-            type: "Entrada distribuida",
-            document: entry.invoice,
-            party: `${entry.supplier || entry.loadedBy || "-"} / ${allocation.location}`,
-            location: allocation.location,
-            sourceEntryId: entry.id,
-            allocationId: allocation.id,
-            canReverseStockAllocation: true,
-            manualEntryId: "",
-            isManualMovement: false,
-            entry: Number(allocation.qty || 0),
-            exit: 0
-          }));
+          .filter((allocation) => {
+            if (allocation.type !== "stock") return false;
+            const allocationLocation = normalizeStockLocationOrBlank(allocation.location);
+            return allocationLocation && (!selectedLocation || allocationLocation === selectedLocation);
+          })
+          .map((allocation) => {
+            const allocationLocation = normalizeStockLocationOrBlank(allocation.location);
+            return {
+              date: entry.date,
+              type: "Entrada distribuida",
+              document: entry.invoice,
+              party: `${entry.supplier || entry.loadedBy || "-"} / ${allocationLocation}`,
+              location: allocationLocation,
+              sourceEntryId: entry.id,
+              allocationId: allocation.id,
+              canReverseStockAllocation: true,
+              manualEntryId: "",
+              isManualMovement: false,
+              entry: Number(allocation.qty || 0),
+              exit: 0
+            };
+          });
       }
       const quantity = Number(entry.quantity || 0);
       const location = normalizeStockLocationOrBlank(entry.location);
