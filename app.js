@@ -877,6 +877,11 @@ async function handleLogin(event) {
   const login = String(data.get("user")).trim().toLowerCase();
   const password = String(data.get("password") || "");
 
+  if (!password) {
+    qs("#login-error").textContent = "Digite a senha para entrar.";
+    return;
+  }
+
   if (window.CIMENTO_FIREBASE?.enabled && !login.includes("@")) {
     qs("#login-error").textContent = "Digite o e-mail cadastrado no Firebase.";
     return;
@@ -945,12 +950,12 @@ function initLogin() {
   if (firebaseAuth) {
     firebaseAuth.onAuthStateChanged(async (firebaseUser) => {
       if (firebaseUser) {
-        saveLoginSession(userProfileFromEmail(firebaseUser.email));
-        await initFirebaseSync();
-        showSystem(currentSessionUser);
-        if (!cloudReady) {
-          showCloudError(`Firebase nao conectou: ${lastCloudError || "confira regras, dominio e internet"}.`);
-        }
+        if (firebaseLoginInProgress) return;
+        await firebaseAuth.signOut();
+        currentSessionUser = null;
+        localStorage.removeItem("cimentoGestorUser");
+        localStorage.removeItem("cimentoGestorSession");
+        showLogin();
       } else {
         showLogin();
       }
