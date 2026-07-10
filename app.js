@@ -2576,6 +2576,9 @@ function buildStockLedger(productId, locationOverride) {
       const location = normalizeStockLocationOrBlank(entry.location);
       if (!location) return [];
       if (selectedLocation && location !== selectedLocation) return [];
+      const isTransferEntry = String(entry.invoice || "").startsWith("TR-")
+        && (normalizeSearch(entry.supplier).includes("origem")
+          || normalizeSearch(entry.supplier).includes("destino"));
       return [{
         date: entry.date,
         type: entry.movementType === "entrada"
@@ -2584,12 +2587,16 @@ function buildStockLedger(productId, locationOverride) {
             ? "Saida manual"
             : entry.movementType === "ajuste"
               ? "Ajuste manual"
-              : quantity < 0 ? "Ajuste de saida" : "Entrada",
+              : isTransferEntry
+                ? (quantity < 0 ? "Transferencia saida" : "Transferencia entrada")
+                : quantity < 0 ? "Ajuste de saida" : "Entrada",
         document: entry.invoice,
         party: `${entry.supplier || entry.loadedBy || "-"} / ${location}`,
         location,
         sourceEntryId: entry.id,
         canReverseStockEntry: isInvoiceStockEntry(entry) && quantity > 0 && stockLocations.includes(normalizeStockLocationOrBlank(entry.location)),
+        canReverseStockTransfer: isTransferEntry,
+        transferDocument: entry.invoice,
         manualEntryId: entry.movementType ? entry.id : "",
         isManualMovement: Boolean(entry.movementType),
         entry: quantity > 0 ? quantity : 0,
@@ -2721,6 +2728,14 @@ function renderStockLedger(productId) {
 
 function stockLedgerDocumentCell(row) {
   const documentLabel = escapeHtml(row.document || "-");
+  if (row.canReverseStockTransfer && row.transferDocument) {
+    return `
+      <button class="ledger-doc-action" type="button"
+        data-stock-ledger-transfer-reversal="${escapeAttr(row.transferDocument)}">
+        ${documentLabel}
+      </button>
+    `;
+  }
   if (row.canReverseStockEntry && row.sourceEntryId) {
     return `
       <button class="ledger-doc-action" type="button"
@@ -7618,6 +7633,57 @@ function reverseStockEntryAllocation(entryId, allocationId) {
   showToast(`Estorno realizado. Saldo da NF ${entry.invoice} voltou a ficar disponivel.`);
 }
 
+function reverseStockTransfer(documentNumber) {
+  const transferEntries = state.stockEntries.filter((entry) => entry.invoice === documentNumber);
+  if (transferEntries.length < 2) {
+    showToast("Transferencia nao encontrada para estorno.");
+    return;
+  }
+
+  const destinationEntry = transferEntries.find((entry) => Number(entry.quantity || 0) > 0);
+  const originEntry = transferEntries.find((entry) => Number(entry.quantity || 0) < 0);
+  if (!destinationEntry || !originEntry) {
+    showToast("Transferencia incompleta para estorno.");
+    return;
+  }
+
+  const quantity = Number(destinationEntry.quantity || 0);
+  const destination = normalizeStockLocationOrBlank(destinationEntry.location);
+  const origin = normalizeStockLocationOrBlank(originEntry.location);
+  if (!quantity || quantity <= 0 || !destination || !origin) {
+    showToast("Transferencia invalida para estorno.");
+    return;
+  }
+  if (!assertStockDateUnlocked(destinationEntry.date, "estornar esta transferencia")) return;
+
+  const product = findStockProductForEntry(destinationEntry)
+    || state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(destinationEntry.product));
+  if (product && productAvailableQty(product, destination) < quantity) {
+    showToast("Saldo insuficiente no destino para estornar esta transferencia.");
+    return;
+  }
+  if (!window.confirm(`Estornar a transferencia ${documentNumber} de ${formatQty(quantity)}?`)) return;
+
+  if (product) {
+    changeProductLocationQty(product, destination, -quantity);
+    changeProductLocationQty(product, origin, quantity);
+  }
+  state.stockEntries = state.stockEntries.filter((entry) => entry.invoice !== documentNumber);
+  state.movements = state.movements.filter((movement) => !(
+    normalizeSearch(movement.op).includes("transferencia")
+    && normalizeSearch(movement.op).includes(normalizeSearch(origin))
+    && normalizeSearch(movement.op).includes(normalizeSearch(destination))
+    && normalizeSearch(movement.product) === normalizeSearch(destinationEntry.product)
+    && Number(movement.qty || 0) === quantity
+  ));
+
+  saveState();
+  saveStateToCloudNow();
+  renderAll();
+  if (selectedStockProductId) renderStockLedger(selectedStockProductId);
+  showToast(`Transferencia ${documentNumber} estornada.`);
+}
+
 function deleteOrder(orderId, reasonValue = "") {
   const reason = String(reasonValue || "").trim();
   if (!reason) {
@@ -8094,9 +8160,13 @@ function bindEvents() {
     renderStockLedger(selectedStockProductId);
   });
   qs("#stock-ledger-table").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-stock-ledger-reversal], [data-stock-ledger-entry-reversal]");
+    const button = event.target.closest("[data-stock-ledger-reversal], [data-stock-ledger-entry-reversal], [data-stock-ledger-transfer-reversal]");
     if (!button) return;
     event.stopPropagation();
+    if (button.dataset.stockLedgerTransferReversal) {
+      reverseStockTransfer(button.dataset.stockLedgerTransferReversal);
+      return;
+    }
     if (button.dataset.stockLedgerEntryReversal) {
       reverseStockEntryToAvailable(button.dataset.stockLedgerEntryReversal);
       return;
@@ -8106,7 +8176,7 @@ function bindEvents() {
   });
   document.addEventListener("click", (event) => {
     if (!event.target.closest("#stock-ledger-action-menu")
-      && !event.target.closest("[data-stock-ledger-reversal], [data-stock-ledger-entry-reversal]")) {
+      && !event.target.closest("[data-stock-ledger-reversal], [data-stock-ledger-entry-reversal], [data-stock-ledger-transfer-reversal]")) {
       closeStockLedgerActionMenu();
     }
   });
