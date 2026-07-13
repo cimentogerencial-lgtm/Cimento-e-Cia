@@ -3548,6 +3548,18 @@ function formatDateBR(dateValue) {
   return dateValue ? String(dateValue).split("-").reverse().join("/") : "";
 }
 
+function formatTimeBR(dateValue) {
+  const date = dateValue ? new Date(dateValue) : new Date();
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatOrderPrintDateTime(order) {
+  const date = formatDateBR(order?.date || today);
+  const time = formatTimeBR(order?.issuedAt || order?.createdAt || order?.updatedAt || "");
+  return time ? `${date} ${time}` : date;
+}
+
 function orderStockDate(order) {
   return order?.deliveryForecast || order?.date || today;
 }
@@ -3613,7 +3625,15 @@ function migrateExistingBoletoReceipts() {
 function replaceOpenReceivablesForOrder(order) {
   const existing = state.receivables.filter((item) => item.origin === order.id);
   const hasReceived = existing.some((item) => item.status === "Recebido");
-  if (hasReceived) {
+  const isBoletoNow = normalizeSearch(order.payment).includes("boleto");
+  const looksLikeAutomaticBoletoReceipt = existing.length && existing.every((item) => {
+    const paidValue = Number(item.paidValue || 0);
+    const value = Number(item.value || 0);
+    return item.status === "Recebido"
+      && Math.abs(paidValue - value) < 0.01
+      && (item.paymentDate || "") === (order.date || today);
+  });
+  if (hasReceived && !(looksLikeAutomaticBoletoReceipt && !isBoletoNow)) {
     existing.forEach((item) => {
       if (item.status !== "Recebido") {
         item.customer = order.customer;
@@ -6887,6 +6907,7 @@ function handleSale(event) {
     items: isGroupedDirectOrder ? groupedOrderItems : standardOrderItems,
     sourceInvoice: sourceEntry?.invoice || "",
     sourceFactoryOrder: sourceEntry?.factoryOrder || "",
+    issuedAt: new Date().toISOString(),
     sellerUser: loggedUser.user,
     sellerName: loggedUser.name,
     sellerRole: loggedUser.role
@@ -7831,7 +7852,7 @@ function deleteOrder(orderId, reasonValue = "") {
 }
 
 function orderPrintHtml(order) {
-  const date = formatDateBR(order.date || today);
+  const date = formatOrderPrintDateTime(order);
   const logoSrc = new URL("./logo-nova.jpeg", window.location.href).href;
   const printItems = orderItems(order);
   const itemsRows = printItems.map((item) => `
@@ -7913,6 +7934,10 @@ function orderPrintHtml(order) {
 function printOrder(orderId) {
   const order = state.orders.find((item) => item.id === orderId);
   if (!order) return;
+  if (!order.issuedAt) {
+    order.issuedAt = new Date().toISOString();
+    saveState();
+  }
   const printWindow = window.open("", "_blank", "width=900,height=700");
   if (!printWindow) {
     showToast("Libere pop-ups para imprimir o pedido.");
