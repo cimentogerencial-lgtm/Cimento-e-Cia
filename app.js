@@ -675,9 +675,9 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.notes = mergeObjectArray(remoteState?.notes, localState?.notes, (item) => item.id || item.invoice || item.key);
   merged.stockEntries = mergeObjectArray(remoteState?.stockEntries, localState?.stockEntries, (item) => item.id || `${item.invoice || ""}-${normalizeSearch(item.product)}-${normalizeLocation(item.location)}-${item.quantity || ""}-${item.date || ""}`);
   merged.movements = mergeObjectArray(remoteState?.movements, localState?.movements, (item) => item.id || item.sourceId || `${item.sourceInvoice || ""}-${item.allocationId || ""}-${item.date || ""}-${normalizeSearch(item.op)}-${normalizeSearch(item.product)}-${item.qty || ""}`);
-  merged.salespeople = mergePrimitiveArray(remoteState?.salespeople, localState?.salespeople, (value) => normalizeDisplayText(value));
+  merged.salespeople = mergePrimitiveArray(remoteState?.salespeople, localState?.salespeople, (value) => normalizeSearch(value));
   merged.drivers = mergePrimitiveArray(remoteState?.drivers, localState?.drivers, (value) => cleanDriverName(value));
-  merged.paymentMethods = mergePrimitiveArray(remoteState?.paymentMethods, localState?.paymentMethods, (value) => normalizeDisplayText(value));
+  merged.paymentMethods = mergePrimitiveArray(remoteState?.paymentMethods, localState?.paymentMethods, (value) => normalizeSearch(value));
   merged.paymentTerms = mergePrimitiveArray(remoteState?.paymentTerms, localState?.paymentTerms, (value) => String(value || "").trim());
   merged.freightTypes = { ...(remoteState?.freightTypes || {}), ...(localState?.freightTypes || {}) };
   merged.dashboardLockOverrides = { ...(remoteState?.dashboardLockOverrides || {}), ...(localState?.dashboardLockOverrides || {}) };
@@ -703,7 +703,9 @@ function applyMergedCloudState(cloudState, shouldKeepLocalPendingChanges = false
   } else {
     syncUsersConfigToState();
   }
-  return cleanupDuplicateImportedStockEntries();
+  const cleanedDuplicateEntries = cleanupDuplicateImportedStockEntries();
+  const cleanedDivinopolisCustomers = removeLegacyDivinopolisEdmilsonAssignments();
+  return cleanedDuplicateEntries || cleanedDivinopolisCustomers;
 }
 
 async function mergeLatestCloudStateBeforeSave() {
@@ -2421,6 +2423,25 @@ function renderSaleExtraItems() {
       <td class="right"><button class="danger-btn" type="button" data-remove-sale-extra-item="${escapeAttr(item.id)}">Excluir</button></td>
     </tr>
   `).join("");
+  updateSaleTotalPreview();
+}
+
+function calculateSaleFormTotal() {
+  const quantity = Number(qs('[name="quantity"]')?.value || 0);
+  const price = parseMoneyInput(qs('[name="price"]')?.value || "");
+  let total = quantity * price;
+  qsa("#sale-extra-items-table tr").forEach((row) => {
+    const qty = Number(row.querySelector("[data-extra-qty]")?.value || 0);
+    const unitPrice = parseMoneyInput(row.querySelector("[data-extra-price]")?.value || "");
+    total += qty * unitPrice;
+  });
+  return Number.isFinite(total) ? total : 0;
+}
+
+function updateSaleTotalPreview() {
+  const target = qs("#sale-total-preview");
+  if (!target) return;
+  target.textContent = money.format(calculateSaleFormTotal());
 }
 
 function addSaleExtraItem(item = {}) {
@@ -5921,6 +5942,30 @@ function restoreDouglasSellerCitiesFromCustomers() {
   return added > 0;
 }
 
+function removeLegacyDivinopolisEdmilsonAssignments() {
+  const version = "remove-divinopolis-edmilson-2026-07-13-v1";
+  state.migrationVersions = state.migrationVersions || {};
+  if (state.migrationVersions[version]) return false;
+
+  const hasDivinopolisRule = state.sellerCities.some((rule) => (
+    normalizeSearch(rule.city) === "divinopolis"
+  ));
+  let changed = false;
+
+  if (!hasDivinopolisRule) {
+    state.customers.forEach((customer) => {
+      const isDivinopolis = normalizeSearch(customerCityText(customer)) === "divinopolis";
+      const isEdmilson = normalizeSearch(customer.salesperson) === "edmilson";
+      if (!isDivinopolis || !isEdmilson) return;
+      customer.salesperson = "";
+      changed = true;
+    });
+  }
+
+  state.migrationVersions[version] = true;
+  return changed;
+}
+
 function upsertPaymentRule(type, reference, payment, term, document = "") {
   const cleanReference = plainCustomerText(reference);
   const cleanDoc = cleanDocument(document);
@@ -6115,6 +6160,7 @@ function applyLastPrice() {
   const dateLabel = qs("#last-sale-date");
   if (priceLabel) priceLabel.textContent = lastPrice ? money.format(Number(lastPrice)) : "Sem historico";
   if (dateLabel) dateLabel.textContent = lastOrder?.date ? lastOrder.date.split("-").reverse().join("/") : "Sem historico";
+  updateSaleTotalPreview();
 }
 
 function setSaleProductLocked(locked = false) {
@@ -6539,6 +6585,7 @@ function resetSaleForm() {
   showDirectLoadInfo();
   renderDirectLoadItems();
   updateDirectLoadDestinationMode();
+  updateSaleTotalPreview();
 }
 
 function startEditOrder(orderId) {
@@ -6580,6 +6627,7 @@ function startEditOrder(orderId) {
   qs('[name="payment"]').dataset.term = order.paymentTerm || "";
   qs("#sale-payment-term").value = order.paymentTerm || "";
   qs('[name="observation"]').value = order.observation || "";
+  updateSaleTotalPreview();
   const sourceEntry = state.stockEntries.find((entry) => entry.id === order.sourceEntryId)
     || state.stockEntries.find((entry) => entry.invoice === order.sourceInvoice);
   sourceEntryDistributionEnabled = Boolean(sourceEntry?.distributionStarted);
@@ -8490,6 +8538,8 @@ function bindEvents() {
     updateDirectLoadDestinationMode();
   }));
   qs("#sale-product").addEventListener("change", applyLastPrice);
+  qs("#sale-form").addEventListener("input", updateSaleTotalPreview);
+  qs("#sale-form").addEventListener("change", updateSaleTotalPreview);
   qs("#add-sale-item").addEventListener("click", () => addSaleExtraItem());
   qs("#sale-extra-items-table").addEventListener("click", (event) => {
     const button = event.target.closest("[data-remove-sale-extra-item]");
@@ -8498,8 +8548,14 @@ function bindEvents() {
     saleExtraItemDrafts = saleExtraItemDrafts.filter((item) => item.id !== button.dataset.removeSaleExtraItem);
     renderSaleExtraItems();
   });
-  qs("#sale-extra-items-table").addEventListener("input", syncSaleExtraItemDrafts);
-  qs("#sale-extra-items-table").addEventListener("change", syncSaleExtraItemDrafts);
+  qs("#sale-extra-items-table").addEventListener("input", () => {
+    syncSaleExtraItemDrafts();
+    updateSaleTotalPreview();
+  });
+  qs("#sale-extra-items-table").addEventListener("change", () => {
+    syncSaleExtraItemDrafts();
+    updateSaleTotalPreview();
+  });
   qs("#toggle-freight-return").addEventListener("click", () => {
     setSaleFreightType(qs("#sale-freight-type").value === "retorno" ? "entrega" : "retorno");
   });
@@ -8968,6 +9024,7 @@ try {
   normalizeDirectLoadDeliveries();
   migrateLegacyEntryAllocations();
   repairPendingOrderStockPostings();
+  if (removeLegacyDivinopolisEdmilsonAssignments()) saveState();
   renderAll();
 } catch (error) {
   console.error("Erro ao carregar dados locais:", error);
