@@ -37,6 +37,7 @@ let cloudLoading = false;
 let cloudSaveTimer = null;
 let cloudUnsubscribe = null;
 let applyingCloudState = false;
+let cloudPendingLocalChanges = false;
 let firebaseAuth = null;
 let firebaseReady = false;
 let firebaseLoginInProgress = false;
@@ -518,6 +519,7 @@ function saveState() {
 
 function saveStateToCloud() {
   if (!cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return;
+  cloudPendingLocalChanges = true;
   window.clearTimeout(cloudSaveTimer);
   cloudSaveTimer = window.setTimeout(saveStateToCloudNow, 1500);
 }
@@ -624,13 +626,77 @@ function mergeArrayByKey(baseItems, localItems, keyFn) {
   return merged;
 }
 
-function applyCloudStateWithLocalBackup(cloudState, _localState) {
-  Object.keys(state).forEach((key) => delete state[key]);
-  Object.assign(
-    state,
-    JSON.parse(JSON.stringify(emptyStateTemplate)),
-    cloudState || {}
+function cloneStateSnapshot(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+function mergePrimitiveArray(remoteItems, localItems, cleanFn = (value) => value) {
+  const merged = [];
+  const seen = new Set();
+  [...(remoteItems || []), ...(localItems || [])].forEach((item) => {
+    const value = cleanFn(item);
+    const key = normalizeSearch(value);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    merged.push(value);
+  });
+  return merged;
+}
+
+function mergeObjectArray(remoteItems, localItems, keyFn) {
+  const map = new Map();
+  [...(remoteItems || []), ...(localItems || [])].forEach((item) => {
+    if (!item) return;
+    const key = keyFn(item);
+    if (!key) return;
+    map.set(key, { ...(map.get(key) || {}), ...item });
+  });
+  return Array.from(map.values());
+}
+
+function mergeCloudAndLocalState(remoteState, localState) {
+  const merged = Object.assign(
+    cloneStateSnapshot(emptyStateTemplate),
+    cloneStateSnapshot(remoteState),
+    cloneStateSnapshot(localState)
   );
+  merged.stock = mergeObjectArray(remoteState?.stock, localState?.stock, (item) => item.id || normalizeSearch(item.product));
+  merged.orders = mergeObjectArray(remoteState?.orders, localState?.orders, (item) => item.id);
+  merged.deletedOrders = mergeObjectArray(remoteState?.deletedOrders, localState?.deletedOrders, (item) => item.orderId || item.id);
+  const deletedOrderIds = new Set((merged.deletedOrders || []).map((item) => item.orderId || item.id).filter(Boolean));
+  merged.orders = (merged.orders || []).filter((order) => !deletedOrderIds.has(order.id));
+  merged.customers = mergeObjectArray(remoteState?.customers, localState?.customers, (item) => cleanDocument(item.document) || normalizeSearch(item.name));
+  merged.receivables = mergeObjectArray(remoteState?.receivables, localState?.receivables, (item) => item.id || `${item.origin || ""}-${item.installment || ""}-${item.dueDate || ""}`);
+  merged.usersConfig = mergeObjectArray(remoteState?.usersConfig, localState?.usersConfig, (item) => item.user || normalizeSearch(item.name));
+  merged.sellerCities = mergeObjectArray(remoteState?.sellerCities, localState?.sellerCities, (item) => item.id || `${normalizeSearch(item.salesperson)}-${normalizeSearch(item.city)}`);
+  merged.paymentRules = mergeObjectArray(remoteState?.paymentRules, localState?.paymentRules, (item) => item.id || `${item.type || ""}-${normalizeSearch(item.reference)}-${normalizeSearch(item.method)}-${normalizeSearch(item.term)}`);
+  merged.freightRates = mergeObjectArray(remoteState?.freightRates, localState?.freightRates, (item) => item.id || `${item.type || ""}-${normalizeSearch(item.city)}`);
+  merged.financialAccounts = mergeObjectArray(remoteState?.financialAccounts, localState?.financialAccounts, (item) => item.id || normalizeSearch(item.name));
+  merged.notes = mergeObjectArray(remoteState?.notes, localState?.notes, (item) => item.id || item.invoice || item.key);
+  merged.stockEntries = mergeObjectArray(remoteState?.stockEntries, localState?.stockEntries, (item) => item.id || `${item.invoice || ""}-${normalizeSearch(item.product)}-${normalizeLocation(item.location)}-${item.quantity || ""}-${item.date || ""}`);
+  merged.movements = mergeObjectArray(remoteState?.movements, localState?.movements, (item) => item.id || item.sourceId || `${item.sourceInvoice || ""}-${item.allocationId || ""}-${item.date || ""}-${normalizeSearch(item.op)}-${normalizeSearch(item.product)}-${item.qty || ""}`);
+  merged.salespeople = mergePrimitiveArray(remoteState?.salespeople, localState?.salespeople, (value) => normalizeDisplayText(value));
+  merged.drivers = mergePrimitiveArray(remoteState?.drivers, localState?.drivers, (value) => cleanDriverName(value));
+  merged.paymentMethods = mergePrimitiveArray(remoteState?.paymentMethods, localState?.paymentMethods, (value) => normalizeDisplayText(value));
+  merged.paymentTerms = mergePrimitiveArray(remoteState?.paymentTerms, localState?.paymentTerms, (value) => String(value || "").trim());
+  merged.freightTypes = { ...(remoteState?.freightTypes || {}), ...(localState?.freightTypes || {}) };
+  merged.dashboardLockOverrides = { ...(remoteState?.dashboardLockOverrides || {}), ...(localState?.dashboardLockOverrides || {}) };
+  merged.manualStockSequence = Math.max(Number(remoteState?.manualStockSequence || 0), Number(localState?.manualStockSequence || 0));
+  merged.reusableOrderIds = mergePrimitiveArray(remoteState?.reusableOrderIds, localState?.reusableOrderIds, (value) => String(value || "").trim());
+  return merged;
+}
+
+function replaceStateContents(nextState) {
+  Object.keys(state).forEach((key) => delete state[key]);
+  Object.assign(state, cloneStateSnapshot(emptyStateTemplate), nextState || {});
+}
+
+function applyMergedCloudState(cloudState, shouldKeepLocalPendingChanges = false) {
+  const localSnapshot = cloneStateSnapshot(state);
+  const nextState = shouldKeepLocalPendingChanges
+    ? mergeCloudAndLocalState(cloudState || {}, localSnapshot)
+    : cloneStateSnapshot(cloudState || {});
+  replaceStateContents(nextState);
   if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
     applyUsersConfig(state.usersConfig);
     syncUsersConfigToState();
@@ -638,6 +704,19 @@ function applyCloudStateWithLocalBackup(cloudState, _localState) {
     syncUsersConfigToState();
   }
   return cleanupDuplicateImportedStockEntries();
+}
+
+async function mergeLatestCloudStateBeforeSave() {
+  if (!cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return;
+  const localSnapshot = cloudSafeState();
+  const latestCloud = await readCloudState();
+  if (!latestCloud.exists || !latestCloud.state) return;
+  replaceStateContents(mergeCloudAndLocalState(latestCloud.state, localSnapshot));
+  localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+}
+
+function applyCloudStateWithLocalBackup(cloudState, _localState) {
+  return applyMergedCloudState(cloudState, false);
 }
 
 function persistCleanedCloudState() {
@@ -648,8 +727,14 @@ function persistCleanedCloudState() {
 async function saveStateToCloudNow() {
   if (!cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return;
   try {
+    window.clearTimeout(cloudSaveTimer);
+    cloudSaveTimer = null;
+    cloudPendingLocalChanges = true;
+    await mergeLatestCloudStateBeforeSave();
     await writeCloudState();
+    cloudPendingLocalChanges = false;
   } catch (error) {
+    cloudPendingLocalChanges = true;
     console.error("Erro ao salvar no Firebase:", error);
     lastCloudError = error?.code || error?.message || "erro ao salvar";
     showCloudError(`Firebase nao salvou: ${lastCloudError}`);
@@ -710,7 +795,7 @@ async function initFirebaseSync() {
       const liveCloudState = await readCloudStateFromSnapshot(liveSnapshot);
       if (!liveCloudState.state) return;
       applyingCloudState = true;
-      const cleanedLiveState = applyCloudStateWithLocalBackup(liveCloudState.state);
+      const cleanedLiveState = applyMergedCloudState(liveCloudState.state, cloudPendingLocalChanges);
       localStorage.setItem("cimentoGestorState", JSON.stringify(state));
       renderAll();
       applyingCloudState = false;
