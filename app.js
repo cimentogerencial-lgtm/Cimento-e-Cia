@@ -1390,8 +1390,8 @@ function applySaleSalesperson(customer = null) {
 
   const normalizedSalesperson = normalizeSalespersonName(resolvedSalesperson) || state.salespeople[0] || "";
   salespersonSelect.value = normalizedSalesperson;
-  salespersonSelect.disabled = true;
-  salespersonSelect.dataset.lockedValue = normalizedSalesperson;
+  salespersonSelect.disabled = false;
+  delete salespersonSelect.dataset.lockedValue;
   return normalizedSalesperson;
 }
 
@@ -1432,17 +1432,23 @@ function applyPaymentRuleForCustomer(customer) {
       renderPaymentMethods();
     }
     paymentSelect.value = rule.payment;
-    paymentSelect.disabled = true;
+    paymentSelect.disabled = false;
     paymentSelect.dataset.term = rule.term || "";
     paymentSelect.dataset.rule = paymentRuleLabel(rule);
-    if (paymentTermInput) paymentTermInput.value = rule.term || "";
+    if (paymentTermInput) {
+      paymentTermInput.value = rule.term || "";
+      paymentTermInput.readOnly = false;
+    }
     const status = qs("#sale-payment-rule-status");
     if (status) status.textContent = `Regra aplicada: ${paymentRuleLabel(rule)} | ${rule.payment} | prazo ${rule.term}`;
   } else {
     paymentSelect.disabled = false;
     paymentSelect.dataset.term = "";
     paymentSelect.dataset.rule = "";
-    if (paymentTermInput) paymentTermInput.value = "";
+    if (paymentTermInput) {
+      paymentTermInput.value = "";
+      paymentTermInput.readOnly = false;
+    }
     const status = qs("#sale-payment-rule-status");
     if (status) status.textContent = "";
   }
@@ -6321,7 +6327,7 @@ function updateDirectLoadDestinationMode() {
   const paymentInput = qs('[name="payment"]');
   if (paymentInput) paymentInput.disabled = isStock;
   const salespersonInput = qs('[name="salesperson"]');
-  if (salespersonInput && isStock) salespersonInput.disabled = true;
+  if (salespersonInput) salespersonInput.disabled = isStock;
   const stockSelect = qs("#sale-stock-location");
   if (stockSelect) {
     if (hasDirectLoad && distributionActive) {
@@ -6572,6 +6578,7 @@ function resetSaleForm() {
   qs('[name="payment"]').dataset.term = "";
   qs('[name="payment"]').dataset.rule = "";
   qs("#sale-payment-term").value = "";
+  qs("#sale-payment-term").readOnly = false;
   qs("#sale-payment-rule-status").textContent = "";
   qs("#sale-form-title").textContent = "Novo pedido de venda";
   qs("#sale-edit-tag").textContent = "Novo";
@@ -6606,7 +6613,7 @@ function startEditOrder(orderId) {
   qs("#sale-stock-location").disabled = Boolean(order.directLoad || order.sourceEntryId);
   qs("#sale-stock-location").value = stockLocations.includes(order.stockLocation) ? order.stockLocation : "Divinopolis";
   qs('[name="salesperson"]').value = order.salesperson || "Edmilson";
-  qs('[name="salesperson"]').disabled = true;
+  qs('[name="salesperson"]').disabled = false;
   qs('[name="driver"]').value = cleanDriverName(order.driver) || "";
   setSaleFreightType(order.freightType || "entrega");
   qs('[name="quantity"]').value = order.qty;
@@ -6623,9 +6630,10 @@ function startEditOrder(orderId) {
   }
   setSaleExtraItemsVisible(!order.directLoad && !order.sourceEntryId);
   qs('[name="payment"]').value = order.payment || "Boleto";
-  qs('[name="payment"]').disabled = Boolean(order.paymentTerm);
+  qs('[name="payment"]').disabled = false;
   qs('[name="payment"]').dataset.term = order.paymentTerm || "";
   qs("#sale-payment-term").value = order.paymentTerm || "";
+  qs("#sale-payment-term").readOnly = false;
   qs('[name="observation"]').value = order.observation || "";
   updateSaleTotalPreview();
   const sourceEntry = state.stockEntries.find((entry) => entry.id === order.sourceEntryId)
@@ -6796,13 +6804,15 @@ function handleSale(event) {
   const salespersonField = qs('[name="salesperson"]');
   if (salespersonField && orderSalesperson) {
     salespersonField.value = orderSalesperson;
-    salespersonField.dataset.lockedValue = orderSalesperson;
-    salespersonField.disabled = true;
+    delete salespersonField.dataset.lockedValue;
+    salespersonField.disabled = false;
   }
   const paymentRule = resolvePaymentRule(customer, orderSalesperson);
   const paymentTermInput = qs("#sale-payment-term");
-  const orderPayment = paymentRule?.payment || paymentInput?.value || data.get("payment") || state.paymentMethods[0] || "Boleto";
-  const orderPaymentTerm = paymentRule?.term || paymentTermInput?.value || paymentInput?.dataset.term || "";
+  const selectedPayment = paymentInput?.value || data.get("payment") || "";
+  const typedPaymentTerm = String(paymentTermInput?.value || data.get("paymentTerm") || "").trim();
+  const orderPayment = selectedPayment || paymentRule?.payment || state.paymentMethods[0] || "Boleto";
+  const orderPaymentTerm = typedPaymentTerm || paymentInput?.dataset.term || paymentRule?.term || "";
   if (paymentTermInput) paymentTermInput.value = orderPaymentTerm || "";
 
   const value = groupedDirectItems.length
@@ -7536,13 +7546,18 @@ function updateOrderLogisticsField(orderId, field, value) {
 }
 
 function nextOrderId(prefix = "PV") {
-  const usedOrderIds = state.orders.map((order) => order.id);
+  const usedOrderIds = state.orders.map((order) => order.id).filter(Boolean);
+  const deletedOrderIds = (state.deletedOrders || [])
+    .map((record) => record.orderId || record.id)
+    .filter(Boolean);
   const reusableId = (state.reusableOrderIds || [])
     .filter((id) => String(id || "").toUpperCase().startsWith(`${prefix.toUpperCase()}-`))
     .filter((id) => !usedOrderIds.includes(id))
+    .filter((id) => !deletedOrderIds.includes(id))
     .sort((a, b) => Number(String(a).split("-").pop()) - Number(String(b).split("-").pop()))[0];
   if (reusableId) return reusableId;
-  const maxNumber = usedOrderIds.reduce((max, orderId) => {
+  const orderIdsForSequence = [...usedOrderIds, ...deletedOrderIds];
+  const maxNumber = orderIdsForSequence.reduce((max, orderId) => {
     const id = String(orderId || "");
     if (!/^PVN?-\d+$/i.test(id)) return max;
     const number = Number(id.split("-").pop());
