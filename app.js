@@ -3033,9 +3033,44 @@ function renderStockUnitButtons(entry) {
   `).join("");
 }
 
+function stockEntryReversibleStockAllocations(entry) {
+  if (!isInvoiceStockEntry(entry)) return [];
+  const directLocation = normalizeStockLocationOrBlank(entry.location);
+  const directQty = Number(entry.quantity || 0);
+  if (!entry.distributionStarted && directLocation && directQty > 0) {
+    return [{
+      id: "",
+      direct: true,
+      location: directLocation,
+      qty: directQty
+    }];
+  }
+  return entryAllocations(entry)
+    .filter((allocation) => allocation.type === "stock")
+    .map((allocation) => ({
+      id: allocation.id,
+      direct: false,
+      location: normalizeStockLocationOrBlank(allocation.location),
+      qty: Number(allocation.qty || 0)
+    }))
+    .filter((allocation) => allocation.location && allocation.qty > 0);
+}
+
 function renderStockEntryGroupActions(entries) {
   const pending = entries.filter((entry) => entryRemainingQuantity(entry) > 0.009);
-  if (!pending.length) return `<span class="status ok">Distribuição concluida</span>`;
+  const reversibleEntries = entries.filter((entry) => stockEntryReversibleStockAllocations(entry).length);
+  if (!pending.length) {
+    return `
+      <div class="entry-distribution-actions">
+        <span class="status ok">Distribuição concluida</span>
+        ${reversibleEntries.map((entry) => `
+          <button class="danger-btn" type="button" data-reverse-stock-entry="${entry.id}">
+            Estornar unidade
+          </button>
+        `).join("")}
+      </div>
+    `;
+  }
   const groupIds = pending.map((entry) => entry.id).join(",");
   const showSingleOrderOption = pending.length > 1;
 
@@ -7941,6 +7976,70 @@ function reverseStockEntryAllocation(entryId, allocationId) {
   showToast(`Estorno realizado. Saldo da NF ${entry.invoice} voltou a ficar disponivel.`);
 }
 
+function reverseStockEntryWarehouseDestination(entryId) {
+  const entry = state.stockEntries.find((item) => item.id === entryId);
+  if (!entry) {
+    showToast("Nota fiscal nao encontrada para estorno.");
+    return;
+  }
+  const stockAllocations = stockEntryReversibleStockAllocations(entry);
+  if (!stockAllocations.length) {
+    showToast("Esta nota nao tem entrada em unidade para estornar.");
+    return;
+  }
+  if (!assertStockDateUnlocked(entry.date, "estornar esta entrada")) return;
+
+  const totalQty = stockAllocations.reduce((sum, allocation) => sum + Number(allocation.qty || 0), 0);
+  const locationsText = [...new Set(stockAllocations.map((allocation) => allocation.location))].join(", ");
+  if (!window.confirm(`Estornar ${formatQty(totalQty)} da NF ${entry.invoice} no estoque de ${locationsText}?`)) {
+    return;
+  }
+
+  const product = findStockProductForEntry(entry) || findStockProductByName(entry.product);
+  stockAllocations.forEach((allocation) => {
+    if (!product) return;
+    const availableQty = productAvailableQty(product, allocation.location);
+    const qtyToRemove = Math.min(availableQty, Number(allocation.qty || 0));
+    if (qtyToRemove > 0) changeProductLocationQty(product, allocation.location, -qtyToRemove);
+  });
+
+  if (stockAllocations.some((allocation) => allocation.direct)) {
+    entry.location = "";
+    entry.generatedOrderId = "";
+    entry.linkedOrderId = "";
+    entry.stockPosted = false;
+    entry.destination = "";
+    entry.distributionStarted = false;
+    entry.allocations = [];
+  } else {
+    const allocationIds = new Set(stockAllocations.map((allocation) => allocation.id));
+    entry.allocations = entryAllocations(entry).filter((allocation) => {
+      if (allocation.type !== "stock") return true;
+      return !allocationIds.has(allocation.id);
+    });
+    if (!entry.allocations.length) {
+      entry.distributionStarted = false;
+      entry.location = "";
+      entry.generatedOrderId = "";
+      entry.linkedOrderId = "";
+      entry.stockPosted = false;
+      entry.destination = "";
+    }
+  }
+
+  updateInvoiceDistributionStatus(entry);
+  const entryDateFilter = qs("#stock-entry-date-filter");
+  if (entryDateFilter) entryDateFilter.value = entry.date || today;
+  const entryLinkFilter = qs("#stock-entry-link-filter");
+  if (entryLinkFilter) entryLinkFilter.value = "";
+
+  saveState();
+  saveStateToCloudNow();
+  renderAll();
+  if (selectedStockProductId) renderStockLedger(selectedStockProductId);
+  showToast(`Estorno realizado. NF ${entry.invoice} voltou para entradas disponiveis.`);
+}
+
 function reverseStockTransfer(documentNumber) {
   const transferEntries = state.stockEntries.filter((entry) => entry.invoice === documentNumber);
   if (transferEntries.length < 2) {
@@ -8529,6 +8628,11 @@ function bindEvents() {
     if (unitButton) {
       const [entryId, location] = unitButton.dataset.stockEntryUnit.split(":");
       updateStockEntryDestination(entryId, location);
+      return;
+    }
+    const reverseEntryButton = event.target.closest("[data-reverse-stock-entry]");
+    if (reverseEntryButton) {
+      reverseStockEntryWarehouseDestination(reverseEntryButton.dataset.reverseStockEntry);
       return;
     }
     const button = event.target.closest("[data-direct-order-entry]");
