@@ -150,6 +150,7 @@ const state = {
   stock: [],
   orders: [],
   deletedOrders: [],
+  deletedProductKeys: [],
   customers: [],
   receivables: [],
   usersConfig: [],
@@ -271,6 +272,8 @@ if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
   syncUsersConfigToState();
 }
 state.deletedOrders = Array.isArray(state.deletedOrders) ? state.deletedOrders : [];
+state.deletedProductKeys = Array.isArray(state.deletedProductKeys) ? state.deletedProductKeys : [];
+state.stock = Array.isArray(state.stock) ? state.stock.filter((product) => !isDeletedProduct(product)) : [];
 state.reusableOrderIds = Array.isArray(state.reusableOrderIds) ? state.reusableOrderIds : [];
 state.drivers = Array.isArray(state.drivers)
   ? cleanDriverOptions(state.drivers)
@@ -665,6 +668,8 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.deletedOrders = mergeObjectArray(remoteState?.deletedOrders, localState?.deletedOrders, (item) => item.orderId || item.id);
   const deletedOrderIds = new Set((merged.deletedOrders || []).map((item) => item.orderId || item.id).filter(Boolean));
   merged.orders = (merged.orders || []).filter((order) => !deletedOrderIds.has(order.id));
+  merged.deletedProductKeys = mergePrimitiveArray(remoteState?.deletedProductKeys, localState?.deletedProductKeys, (value) => String(value || "").trim());
+  merged.stock = (merged.stock || []).filter((product) => !isDeletedProduct(product, merged.deletedProductKeys));
   merged.customers = mergeObjectArray(remoteState?.customers, localState?.customers, (item) => cleanDocument(item.document) || normalizeSearch(item.name));
   merged.receivables = mergeObjectArray(remoteState?.receivables, localState?.receivables, (item) => item.id || `${item.origin || ""}-${item.installment || ""}-${item.dueDate || ""}`);
   merged.usersConfig = mergeObjectArray(remoteState?.usersConfig, localState?.usersConfig, (item) => item.user || normalizeSearch(item.name));
@@ -4737,24 +4742,42 @@ function deleteFreightRate(rateId) {
   showToast("Frete excluído.");
 }
 
+function normalizeDateForCompare(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10);
+  const brMatch = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (brMatch) return `${brMatch[3]}-${brMatch[2]}-${brMatch[1]}`;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function daysBetweenDates(startDate, endDate) {
-  const start = new Date(`${startDate}T00:00:00`);
-  const end = new Date(`${endDate}T00:00:00`);
+  const startValue = normalizeDateForCompare(startDate);
+  const endValue = normalizeDateForCompare(endDate);
+  const start = new Date(`${startValue}T00:00:00`);
+  const end = new Date(`${endValue}T00:00:00`);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 9999;
   return Math.floor((end - start) / 86400000);
 }
 
 function buildRecentImportedNotes(daysBack = 4) {
+  refreshToday();
   const notesByKey = new Map();
   const addNote = (note, noteIndex = -1) => {
-    if (!note?.number) return;
-    const issue = note.issue || String(note.issueDateTime || "").slice(0, 10) || today;
+    const noteNumber = note?.number || note?.invoice || note?.nf || note?.nota;
+    if (!noteNumber) return;
+    const issue = normalizeDateForCompare(note.issue || note.date || note.emissionDate || note.issueDateTime || note.importedAt || note.createdAt) || today;
     const age = daysBetweenDates(issue, today);
     if (age < 0 || age > daysBack) return;
-    const key = `${note.number}|${normalizeSearch(note.supplier)}`;
+    const key = `${noteNumber}|${normalizeSearch(note.supplier)}`;
     const current = notesByKey.get(key);
     notesByKey.set(key, {
-      number: note.number,
+      number: noteNumber,
       supplier: note.supplier || "-",
       issue,
       ovNumber: note.ovNumber || note.factoryOrder || current?.ovNumber || "-",
@@ -4771,8 +4794,8 @@ function buildRecentImportedNotes(daysBack = 4) {
     });
   };
 
-  state.notes.forEach((note, index) => addNote(note, index));
-  state.stockEntries.filter(isInvoiceStockEntry).forEach((entry) => {
+  (state.notes || []).forEach((note, index) => addNote(note, index));
+  (state.stockEntries || []).filter((entry) => entry?.invoice && isInvoiceStockEntry(entry)).forEach((entry) => {
     if (!entry.invoice) return;
     const key = `${entry.invoice}|${normalizeSearch(entry.supplier)}`;
     const current = notesByKey.get(key);
@@ -4789,7 +4812,7 @@ function buildRecentImportedNotes(daysBack = 4) {
     addNote({
       number: entry.invoice,
       supplier: entry.supplier || "-",
-      issue: entry.date || entry.issue || today,
+      issue: entry.date || entry.issue || entry.emissionDate || entry.importedAt || entry.createdAt || today,
       ovNumber: entry.ovNumber || entry.factoryOrder || "-",
       destination: linkedOrders.length
         ? `Pedidos ${[...new Set(linkedOrders)].join(", ")}`
@@ -4896,6 +4919,7 @@ function renderAll() {
 }
 
 function addStock(productName, quantity, factory = "Fornecedor importado", batch = `NF-${Date.now().toString().slice(-5)}`, locationValue = "Divinopolis") {
+  forgetDeletedProduct({ product: productName, factory });
   const productKey = normalizeSearch(productName);
   const found = state.stock.find((item) => normalizeSearch(item.product) === productKey);
   if (found) {
@@ -4920,6 +4944,7 @@ function addStock(productName, quantity, factory = "Fornecedor importado", batch
 }
 
 function ensureStockProduct(productName, factory = "Fornecedor importado", batch = "") {
+  forgetDeletedProduct({ product: productName, factory });
   const productKey = normalizeSearch(productName);
   let product = state.stock.find((item) => normalizeSearch(item.product) === productKey);
   if (!product) {
@@ -5228,6 +5253,32 @@ function makeProductId(productName, factory) {
   return id;
 }
 
+function productDeleteKeys(product) {
+  if (!product) return [];
+  return [
+    product.id,
+    `${normalizeSearch(product.product)}|${normalizeSearch(product.factory)}`
+  ].filter(Boolean);
+}
+
+function isDeletedProduct(product, keys = state.deletedProductKeys) {
+  const deletedKeys = new Set(Array.isArray(keys) ? keys : []);
+  return productDeleteKeys(product).some((key) => deletedKeys.has(key));
+}
+
+function rememberDeletedProduct(product) {
+  state.deletedProductKeys = Array.isArray(state.deletedProductKeys) ? state.deletedProductKeys : [];
+  const keys = new Set(state.deletedProductKeys);
+  productDeleteKeys(product).forEach((key) => keys.add(key));
+  state.deletedProductKeys = [...keys];
+}
+
+function forgetDeletedProduct(product) {
+  if (!Array.isArray(state.deletedProductKeys)) return;
+  const keys = new Set(productDeleteKeys(product));
+  state.deletedProductKeys = state.deletedProductKeys.filter((key) => !keys.has(key));
+}
+
 function resetCustomerForm() {
   editingCustomerDocument = "";
   qs("#customer-form").reset();
@@ -5346,11 +5397,13 @@ function deleteProduct(productId) {
     showToast("Nao e possivel excluir: produto ja usado em pedido.");
     return;
   }
+  rememberDeletedProduct(product);
   state.stock = state.stock.filter((item) => item.id !== productId);
   state.stockEntries = state.stockEntries.filter((entry) => normalizeSearch(entry.product) !== normalizeSearch(product.product));
   state.movements = state.movements.filter((movement) => normalizeSearch(movement.product) !== normalizeSearch(product.product));
   if (editingProductId === productId) resetProductForm();
   saveState();
+  saveStateToCloudNow();
   renderAll();
   showToast("Produto excluído.");
 }
@@ -5671,10 +5724,12 @@ function handleProductForm(event) {
   });
 
   if (existing) {
+    forgetDeletedProduct(existing);
     existing.batch = batch;
     changeProductLocationQty(existing, "Divinopolis", qty);
     existing.min = min;
   } else {
+    forgetDeletedProduct({ product: productName, factory });
     const locations = makeEmptyLocations();
     locations["Divinopolis"] = qty;
     state.stock.push({
