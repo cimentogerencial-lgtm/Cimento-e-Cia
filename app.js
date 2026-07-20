@@ -3796,7 +3796,6 @@ function buildReceivablesForOrder(order) {
   const installments = dueDays.length;
   const cents = Math.round(Number(order.value || 0) * 100);
   const baseCents = Math.floor(cents / installments);
-  const isAutomaticBoletoReceipt = normalizeSearch(order.payment).includes("boleto");
   let usedCents = 0;
 
   return dueDays.map((days, index) => {
@@ -3809,59 +3808,51 @@ function buildReceivablesForOrder(order) {
       origin: order.id,
       installment: `${index + 1}/${installments}`,
       value: installmentCents / 100,
-      paidValue: isAutomaticBoletoReceipt ? installmentCents / 100 : 0,
-      status: isAutomaticBoletoReceipt ? "Recebido" : "Aberto",
+      paidValue: 0,
+      status: "Aberto",
       payment: order.payment,
       salesperson: order.salesperson || "Nao informado",
       billingStatus: "Nao faturado",
       accountId: "",
-      paymentDate: isAutomaticBoletoReceipt ? (order.date || today) : ""
+      paymentDate: ""
     };
   });
 }
 
 function migrateExistingBoletoReceipts() {
   if (state.autoBoletoReceiptsMigrated) return;
-  state.receivables.forEach((receivable) => {
-    const order = state.orders.find((item) => item.id === receivable.origin);
-    const paymentMethod = order?.payment || receivable.payment || "";
-    if (!normalizeSearch(paymentMethod).includes("boleto")) return;
-    receivable.payment = paymentMethod;
-    receivable.paidValue = Number(receivable.value || 0);
-    receivable.status = "Recebido";
-    receivable.paymentDate = order?.date || receivable.paymentDate || today;
-  });
-  state.orders.forEach((order) => {
-    if (normalizeSearch(order.payment).includes("boleto")) order.status = "Recebido";
-  });
   state.autoBoletoReceiptsMigrated = true;
   saveState();
 }
 
 function replaceOpenReceivablesForOrder(order) {
   const existing = state.receivables.filter((item) => item.origin === order.id);
-  const hasReceived = existing.some((item) => item.status === "Recebido");
-  const isBoletoNow = normalizeSearch(order.payment).includes("boleto");
-  const looksLikeAutomaticBoletoReceipt = existing.length && existing.every((item) => {
-    const paidValue = Number(item.paidValue || 0);
-    const value = Number(item.value || 0);
-    return item.status === "Recebido"
-      && Math.abs(paidValue - value) < 0.01
-      && (item.paymentDate || "") === (order.date || today);
-  });
-  if (hasReceived && !(looksLikeAutomaticBoletoReceipt && !isBoletoNow)) {
-    existing.forEach((item) => {
-      if (item.status !== "Recebido") {
-        item.customer = order.customer;
-        item.payment = order.payment;
-        item.billingStatus = item.billingStatus || "Nao faturado";
-        item.salesperson = order.salesperson || "Nao informado";
-      }
-    });
-    return;
-  }
+  const paidTotal = existing.reduce((sum, item) => sum + Number(item.paidValue || 0), 0);
+  const lastPaymentDate = existing.find((item) => item.paymentDate)?.paymentDate || "";
+  const billingStatus = existing.find((item) => item.billingStatus)?.billingStatus || "Nao faturado";
+
   state.receivables = state.receivables.filter((item) => item.origin !== order.id);
-  state.receivables.unshift(...buildReceivablesForOrder(order));
+
+  let remainingPaid = paidTotal;
+  const rebuilt = buildReceivablesForOrder(order).map((item) => {
+    const value = Number(item.value || 0);
+    const paidValue = Math.min(value, Math.max(0, remainingPaid));
+    remainingPaid -= paidValue;
+
+    return {
+      ...item,
+      billingStatus,
+      paidValue,
+      paymentDate: paidValue > 0 ? (lastPaymentDate || today) : "",
+      status: paidValue >= value - 0.01 && value > 0
+        ? "Recebido"
+        : paidValue > 0
+          ? "Parcial"
+          : "Aberto"
+    };
+  });
+
+  state.receivables.unshift(...rebuilt);
 }
 
 function boletoExportReceivables() {
@@ -7243,12 +7234,6 @@ function handleSale(event) {
       updateInvoiceDistributionStatus(sourceEntry);
     }
 
-    const receivable = state.receivables.find((item) => item.origin === order.id);
-    if (receivable) {
-      receivable.customer = customer.name;
-      receivable.value = order.value;
-      receivable.payment = order.payment;
-    }
     replaceOpenReceivablesForOrder(order);
 
     resetSaleForm();
