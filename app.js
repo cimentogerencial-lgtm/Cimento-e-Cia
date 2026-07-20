@@ -1608,7 +1608,7 @@ function migrateLegacyEntryAllocations() {
     const order = orderId ? state.orders.find((item) => item.id === orderId) : null;
     if (!order?.directLoad) return;
     const oldLocation = stockLocations.includes(entry.location) ? entry.location : "";
-    const product = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+    const product = findStockProductForEntry(entry);
     if (oldLocation && product) {
       changeProductLocationQty(product, oldLocation, -Number(entry.quantity || 0));
     }
@@ -2543,13 +2543,13 @@ function buildStandardOrderItems(mainProduct, mainQty, mainPrice, stockLocation)
 
 function findStockProductForOrderItem(item) {
   return state.stock.find((product) => product.id === item.productId)
-    || state.stock.find((product) => normalizeSearch(product.product) === normalizeSearch(item.product));
+    || findStockProductByName(item.product);
 }
 
 function findStockProductForEntry(entry) {
   if (!entry) return null;
-  return state.stock.find((product) => normalizeSearch(product.product) === normalizeSearch(entry.product))
-    || state.stock.find((product) => product.id === entry.productId);
+  return state.stock.find((product) => product.id === entry.productId)
+    || findStockProductByName(entry.product);
 }
 
 function saleLockedProductId(fallbackId = "") {
@@ -2665,8 +2665,8 @@ function buildStockLedger(productId, locationOverride) {
   const entries = state.stockEntries
     .filter((entry) => {
       const sameProductId = entry.productId && entry.productId === product.id;
-      const sameProductName = normalizeSearch(entry.product) === normalizeSearch(product.product);
-      return sameProductId || sameProductName;
+      const sameProductNameMatch = sameProductName(entry.product, product.product);
+      return sameProductId || sameProductNameMatch;
     })
     .flatMap((entry) => {
       if (entry.distributionStarted) {
@@ -2729,7 +2729,7 @@ function buildStockLedger(productId, locationOverride) {
   const exits = state.orders
     .filter((order) => order.deliveryStatus === "Entregue" && order.stockPosted && !order.directLoad)
     .flatMap((order) => orderItems(order)
-      .filter((item) => item.productId === productId || normalizeSearch(item.product) === normalizeSearch(product.product))
+      .filter((item) => item.productId === productId || sameProductName(item.product, product.product))
       .filter((item) => !selectedLocation || normalizeLocation(item.stockLocation || order.stockLocation) === selectedLocation)
       .map((item) => {
         const location = normalizeLocation(item.stockLocation || order.stockLocation);
@@ -3164,7 +3164,7 @@ function updateInvoiceUnitDestination(entryId, allocationId, nextLocation) {
     return;
   }
 
-  const product = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+  const product = findStockProductForEntry(entry);
   if (!product) {
     showToast("Produto da nota nao encontrado no estoque.");
     return;
@@ -3205,7 +3205,7 @@ function openInvoiceOrders(entryId) {
 function beginEntryDistribution(entry) {
   if (entry.distributionStarted) return;
   const oldLocation = stockLocations.includes(entry.location) ? entry.location : "";
-  const product = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+  const product = findStockProductForEntry(entry);
   if (oldLocation && product) {
     changeProductLocationQty(product, oldLocation, -Number(entry.quantity || 0));
     state.movements.unshift({
@@ -4920,8 +4920,7 @@ function renderAll() {
 
 function addStock(productName, quantity, factory = "Fornecedor importado", batch = `NF-${Date.now().toString().slice(-5)}`, locationValue = "Divinopolis") {
   forgetDeletedProduct({ product: productName, factory });
-  const productKey = normalizeSearch(productName);
-  const found = state.stock.find((item) => normalizeSearch(item.product) === productKey);
+  const found = findStockProductByName(productName);
   if (found) {
     changeProductLocationQty(found, locationValue, quantity);
     found.factory = found.factory || factory;
@@ -4945,8 +4944,7 @@ function addStock(productName, quantity, factory = "Fornecedor importado", batch
 
 function ensureStockProduct(productName, factory = "Fornecedor importado", batch = "") {
   forgetDeletedProduct({ product: productName, factory });
-  const productKey = normalizeSearch(productName);
-  let product = state.stock.find((item) => normalizeSearch(item.product) === productKey);
+  let product = findStockProductByName(productName);
   if (!product) {
     product = {
       id: makeProductId(productName, factory),
@@ -4996,7 +4994,7 @@ function cleanupDuplicateImportedStockEntries() {
       return;
     }
 
-    const product = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+    const product = findStockProductForEntry(entry);
     const quantity = Number(entry.quantity || 0);
     if (product && quantity > 0) {
       changeProductLocationQty(product, normalizeLocation(entry.location), -quantity);
@@ -5139,7 +5137,7 @@ function handleManualStockMovement(event) {
 function deleteManualStockMovement(entryId) {
   const entry = state.stockEntries.find((item) => item.id === entryId && item.movementType);
   if (!entry) return;
-  const product = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+  const product = findStockProductForEntry(entry);
   if (!product) {
     showToast("Produto do lançamento nao encontrado.");
     return;
@@ -5156,10 +5154,10 @@ function deleteManualStockMovement(entryId) {
 
   changeProductLocationQty(product, location, -quantity);
   state.stockEntries = state.stockEntries.filter((item) => item.id !== entryId);
-  const movementIndex = state.movements.findIndex((movement) => movement.sourceId === entryId
+    const movementIndex = state.movements.findIndex((movement) => movement.sourceId === entryId
     || (!movement.sourceId
       && movement.date === entry.date
-      && normalizeSearch(movement.product) === normalizeSearch(entry.product)
+      && sameProductName(movement.product, entry.product)
       && Number(movement.qty || 0) === quantity
       && normalizeSearch(movement.op).includes("manual")));
   if (movementIndex >= 0) state.movements.splice(movementIndex, 1);
@@ -5392,15 +5390,15 @@ function startEditProduct(productId) {
 function deleteProduct(productId) {
   const product = state.stock.find((item) => item.id === productId);
   if (!product) return;
-  const usedInOrder = state.orders.some((order) => orderItems(order).some((item) => item.productId === productId || normalizeSearch(item.product) === normalizeSearch(product.product)));
+  const usedInOrder = state.orders.some((order) => orderItems(order).some((item) => item.productId === productId || sameProductName(item.product, product.product)));
   if (usedInOrder) {
     showToast("Nao e possivel excluir: produto ja usado em pedido.");
     return;
   }
   rememberDeletedProduct(product);
   state.stock = state.stock.filter((item) => item.id !== productId);
-  state.stockEntries = state.stockEntries.filter((entry) => normalizeSearch(entry.product) !== normalizeSearch(product.product));
-  state.movements = state.movements.filter((movement) => normalizeSearch(movement.product) !== normalizeSearch(product.product));
+  state.stockEntries = state.stockEntries.filter((entry) => !sameProductName(entry.product, product.product));
+  state.movements = state.movements.filter((movement) => !sameProductName(movement.product, product.product));
   if (editingProductId === productId) resetProductForm();
   saveState();
   saveStateToCloudNow();
@@ -5868,6 +5866,25 @@ function normalizeSearch(value) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .trim();
+}
+
+function normalizeProductKey(value) {
+  return normalizeSearch(value)
+    .replace(/\b\d+(?:[.,]\d+)?\s*sacos?\b/g, "")
+    .replace(/\btonelada\b/g, "ton")
+    .replace(/tona/g, "ton")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function sameProductName(first, second) {
+  const firstKey = normalizeProductKey(first);
+  const secondKey = normalizeProductKey(second);
+  return Boolean(firstKey && secondKey && firstKey === secondKey);
+}
+
+function findStockProductByName(productName) {
+  return state.stock.find((product) => sameProductName(product.product, productName))
+    || state.stock.find((product) => normalizeSearch(product.product) === normalizeSearch(productName));
 }
 
 function plainCustomerText(value) {
@@ -6519,7 +6536,7 @@ function sendDirectLoadQuantityToStock(stockLocation, qty) {
     if (!item.entry || item.qty <= 0.009) return;
     beginEntryDistribution(item.entry);
     const allocationId = `ALOC-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
-    let product = findStockProductForEntry(item.entry) || state.stock.find((stockItem) => normalizeSearch(stockItem.product) === normalizeSearch(item.entry.product));
+    let product = findStockProductForEntry(item.entry) || findStockProductByName(item.entry.product);
     if (!product) product = ensureStockProduct(item.entry.product, item.entry.supplier || item.entry.brand || "Fornecedor importado", item.entry.invoice);
     changeProductLocationQty(product, stockLocation, item.qty);
     entryAllocations(item.entry).push({
@@ -6907,7 +6924,7 @@ function handleSale(event) {
   });
   if (groupedDirectItems.length) {
     groupedDirectItems.forEach((item) => {
-      const itemProduct = state.stock.find((stockItem) => normalizeSearch(stockItem.product) === normalizeSearch(item.product));
+      const itemProduct = findStockProductByName(item.product);
       if (itemProduct) customer.lastPrices[itemProduct.id] = item.price;
     });
   } else if (standardOrderItems.length) {
@@ -7692,7 +7709,7 @@ function createDirectOrderFromEntry(entryId) {
     return;
   }
   const product = findStockProductForEntry(entry)
-    || state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+    || findStockProductByName(entry.product);
   if (!product) {
     showToast("Produto da nota nao encontrado no estoque.");
     return;
@@ -7732,7 +7749,7 @@ function createDirectOrderFromEntryGroup(entryIdsValue) {
     return;
   }
   const firstEntry = entries[0];
-  const firstProduct = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(firstEntry.product));
+  const firstProduct = findStockProductForEntry(firstEntry);
   if (!firstProduct) {
     showToast("Produto da nota nao encontrado no estoque.");
     return;
@@ -7785,7 +7802,7 @@ function updateStockEntryDestination(entryId, nextLocationValue) {
   }
 
   beginEntryDistribution(entry);
-  let product = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+  let product = findStockProductForEntry(entry);
   if (product) {
     changeProductLocationQty(product, nextLocationValue, remaining);
   } else {
@@ -7827,7 +7844,7 @@ function reverseStockEntryToAvailable(entryId) {
   if (!assertStockDateUnlocked(entry.date, "estornar esta entrada")) return;
 
   const product = findStockProductForEntry(entry)
-    || state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+    || findStockProductByName(entry.product);
   if (product && productAvailableQty(product, location) < quantity) {
     showToast("Saldo insuficiente na unidade para estornar esta entrada.");
     return;
@@ -7891,7 +7908,7 @@ function reverseStockEntryAllocation(entryId, allocationId) {
   }
 
   let product = findStockProductForEntry(entry)
-    || state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+    || findStockProductByName(entry.product);
   if (product) {
     changeProductLocationQty(product, location, -quantity);
   }
@@ -7948,7 +7965,7 @@ function reverseStockTransfer(documentNumber) {
   if (!assertStockDateUnlocked(destinationEntry.date, "estornar esta transferencia")) return;
 
   const product = findStockProductForEntry(destinationEntry)
-    || state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(destinationEntry.product));
+    || findStockProductByName(destinationEntry.product);
   if (product && productAvailableQty(product, destination) < quantity) {
     showToast("Saldo insuficiente no destino para estornar esta transferencia.");
     return;
@@ -8288,7 +8305,7 @@ function deleteImportedNote(noteIndex, noteNumber = "", noteSupplierValue = "") 
   }
 
   entries.forEach((entry) => {
-    const product = state.stock.find((item) => normalizeSearch(item.product) === normalizeSearch(entry.product));
+    const product = findStockProductForEntry(entry);
     const quantity = Number(entry.quantity || 0);
     if (product && quantity > 0) {
       changeProductLocationQty(product, entry.location, -quantity);
