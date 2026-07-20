@@ -1556,6 +1556,12 @@ function normalizeStockLocationOrBlank(value) {
   return stockLocations.find((location) => normalizeSearch(location) === normalized) || "";
 }
 
+function findStockLocationInText(value) {
+  const normalized = normalizeSearch(value);
+  if (!normalized) return "";
+  return stockLocations.find((location) => normalized.includes(normalizeSearch(location))) || "";
+}
+
 function syncProductTotal(product) {
   product.locations = product.locations || makeEmptyLocations();
   stockLocations.forEach((location) => {
@@ -3035,9 +3041,27 @@ function renderStockUnitButtons(entry) {
 
 function stockEntryReversibleStockAllocations(entry) {
   if (!isInvoiceStockEntry(entry)) return [];
-  const directLocation = normalizeStockLocationOrBlank(entry.location);
+  const allocations = entryAllocations(entry);
+  const stockAllocations = allocations
+    .filter((allocation) => allocation.type === "stock")
+    .map((allocation) => ({
+      id: allocation.id,
+      direct: false,
+      location: normalizeStockLocationOrBlank(allocation.location) || findStockLocationInText(allocation.destination),
+      qty: Number(allocation.qty || 0)
+    }))
+    .filter((allocation) => allocation.location && allocation.qty > 0);
+
+  if (stockAllocations.length) return stockAllocations;
+
+  const directLocation = normalizeStockLocationOrBlank(entry.location)
+    || findStockLocationInText(entry.destination)
+    || findStockLocationInText(entry.destino)
+    || findStockLocationInText(entry.unit)
+    || findStockLocationInText(entry.stockLocation);
   const directQty = Number(entry.quantity || 0);
-  if (!entry.distributionStarted && directLocation && directQty > 0) {
+  const hasOrderAllocation = allocations.some((allocation) => allocation.type === "order");
+  if (directLocation && directQty > 0 && !hasOrderAllocation) {
     return [{
       id: "",
       direct: true,
@@ -3045,20 +3069,16 @@ function stockEntryReversibleStockAllocations(entry) {
       qty: directQty
     }];
   }
-  return entryAllocations(entry)
-    .filter((allocation) => allocation.type === "stock")
-    .map((allocation) => ({
-      id: allocation.id,
-      direct: false,
-      location: normalizeStockLocationOrBlank(allocation.location),
-      qty: Number(allocation.qty || 0)
-    }))
-    .filter((allocation) => allocation.location && allocation.qty > 0);
+  return [];
 }
 
 function renderStockEntryGroupActions(entries) {
-  const pending = entries.filter((entry) => entryRemainingQuantity(entry) > 0.009);
   const reversibleEntries = entries.filter((entry) => stockEntryReversibleStockAllocations(entry).length);
+  const pending = entries.filter((entry) => {
+    if (entryRemainingQuantity(entry) <= 0.009) return false;
+    const isWarehouseOnly = !entryAllocations(entry).length && stockEntryReversibleStockAllocations(entry).some((allocation) => allocation.direct);
+    return !isWarehouseOnly;
+  });
   if (!pending.length) {
     return `
       <div class="entry-distribution-actions">
