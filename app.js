@@ -151,6 +151,7 @@ const state = {
   orders: [],
   deletedOrders: [],
   deletedProductKeys: [],
+  deletedManualStockEntryIds: [],
   customers: [],
   receivables: [],
   usersConfig: [],
@@ -273,6 +274,7 @@ if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
 }
 state.deletedOrders = Array.isArray(state.deletedOrders) ? state.deletedOrders : [];
 state.deletedProductKeys = Array.isArray(state.deletedProductKeys) ? state.deletedProductKeys : [];
+state.deletedManualStockEntryIds = Array.isArray(state.deletedManualStockEntryIds) ? state.deletedManualStockEntryIds : [];
 state.stock = Array.isArray(state.stock) ? state.stock.filter((product) => !isDeletedProduct(product)) : [];
 state.reusableOrderIds = Array.isArray(state.reusableOrderIds) ? state.reusableOrderIds : [];
 state.drivers = Array.isArray(state.drivers)
@@ -321,7 +323,7 @@ state.orders.forEach((order) => {
   order.paymentTerm = order.paymentTerm || "";
   order.freightType = order.freightType === "retorno" ? "retorno" : "entrega";
 });
-state.stockEntries = state.stockEntries || [];
+state.stockEntries = (state.stockEntries || []).filter((entry) => !isDeletedManualStockEntry(entry, state.deletedManualStockEntryIds));
 state.stockEntries.forEach((entry, index) => {
   entry.id = entry.id || `ENT-${entry.invoice || "SEMNF"}-${index}-${Date.now().toString().slice(-5)}`;
   entry.allocations = Array.isArray(entry.allocations) ? entry.allocations : [];
@@ -339,6 +341,7 @@ state.stockEntries.forEach((entry, index) => {
   }
   entry.loadedBy = cleanDriverName(entry.loadedBy);
 });
+normalizeStockProductsAndEntries();
 applyManualStockNumberMigration();
 state.notes = state.notes || [];
 state.paymentMethods = Array.isArray(state.paymentMethods) && state.paymentMethods.length
@@ -669,6 +672,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
   const deletedOrderIds = new Set((merged.deletedOrders || []).map((item) => item.orderId || item.id).filter(Boolean));
   merged.orders = (merged.orders || []).filter((order) => !deletedOrderIds.has(order.id));
   merged.deletedProductKeys = mergePrimitiveArray(remoteState?.deletedProductKeys, localState?.deletedProductKeys, (value) => String(value || "").trim());
+  merged.deletedManualStockEntryIds = mergePrimitiveArray(remoteState?.deletedManualStockEntryIds, localState?.deletedManualStockEntryIds, (value) => String(value || "").trim());
   merged.stock = (merged.stock || []).filter((product) => !isDeletedProduct(product, merged.deletedProductKeys));
   merged.customers = mergeObjectArray(remoteState?.customers, localState?.customers, (item) => cleanDocument(item.document) || normalizeSearch(item.name));
   merged.receivables = mergeObjectArray(remoteState?.receivables, localState?.receivables, (item) => item.id || `${item.origin || ""}-${item.installment || ""}-${item.dueDate || ""}`);
@@ -679,6 +683,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.financialAccounts = mergeObjectArray(remoteState?.financialAccounts, localState?.financialAccounts, (item) => item.id || normalizeSearch(item.name));
   merged.notes = mergeObjectArray(remoteState?.notes, localState?.notes, (item) => item.id || item.invoice || item.key);
   merged.stockEntries = mergeObjectArray(remoteState?.stockEntries, localState?.stockEntries, (item) => item.id || `${item.invoice || ""}-${normalizeSearch(item.product)}-${normalizeLocation(item.location)}-${item.quantity || ""}-${item.date || ""}`);
+  merged.stockEntries = (merged.stockEntries || []).filter((entry) => !isDeletedManualStockEntry(entry, merged.deletedManualStockEntryIds));
   merged.movements = mergeObjectArray(remoteState?.movements, localState?.movements, (item) => item.id || item.sourceId || `${item.sourceInvoice || ""}-${item.allocationId || ""}-${item.date || ""}-${normalizeSearch(item.op)}-${normalizeSearch(item.product)}-${item.qty || ""}`);
   merged.salespeople = mergePrimitiveArray(remoteState?.salespeople, localState?.salespeople, (value) => normalizeSearch(value));
   merged.drivers = mergePrimitiveArray(remoteState?.drivers, localState?.drivers, (value) => cleanDriverName(value));
@@ -688,6 +693,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.dashboardLockOverrides = { ...(remoteState?.dashboardLockOverrides || {}), ...(localState?.dashboardLockOverrides || {}) };
   merged.manualStockSequence = Math.max(Number(remoteState?.manualStockSequence || 0), Number(localState?.manualStockSequence || 0));
   merged.reusableOrderIds = mergePrimitiveArray(remoteState?.reusableOrderIds, localState?.reusableOrderIds, (value) => String(value || "").trim());
+  normalizeStockProductsAndEntries(merged);
   return merged;
 }
 
@@ -710,7 +716,8 @@ function applyMergedCloudState(cloudState, shouldKeepLocalPendingChanges = false
   }
   const cleanedDuplicateEntries = cleanupDuplicateImportedStockEntries();
   const cleanedDivinopolisCustomers = removeLegacyDivinopolisEdmilsonAssignments();
-  return cleanedDuplicateEntries || cleanedDivinopolisCustomers;
+  const normalizedStockProducts = normalizeStockProductsAndEntries();
+  return cleanedDuplicateEntries || cleanedDivinopolisCustomers || normalizedStockProducts;
 }
 
 async function mergeLatestCloudStateBeforeSave() {
@@ -1560,6 +1567,126 @@ function findStockLocationInText(value) {
   const normalized = normalizeSearch(value);
   if (!normalized) return "";
   return stockLocations.find((location) => normalized.includes(normalizeSearch(location))) || "";
+}
+
+function stripStockLocationSuffixFromProductName(value) {
+  let productName = String(value || "").trim();
+  stockLocations.forEach((location) => {
+    const escapedLocation = location.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    productName = productName.replace(new RegExp(`\\s*-\\s*${escapedLocation}\\s*$`, "i"), "");
+  });
+  return productName.trim();
+}
+
+function normalizeStockProductsAndEntries(targetState = state) {
+  let changed = false;
+  const stockList = Array.isArray(targetState.stock) ? targetState.stock : [];
+  const idRedirects = new Map();
+  const mergedStock = [];
+  const byKey = new Map();
+
+  stockList.forEach((product) => {
+    const cleanProductName = stripStockLocationSuffixFromProductName(product.product);
+    if (cleanProductName && product.product !== cleanProductName) {
+      product.product = cleanProductName;
+      changed = true;
+    }
+    product.locations = product.locations || makeEmptyLocations();
+    syncProductTotal(product);
+    const key = `${normalizeProductKey(product.product)}|${normalizeSearch(product.factory || "")}`;
+    if (!normalizeProductKey(product.product)) {
+      mergedStock.push(product);
+      return;
+    }
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, product);
+      mergedStock.push(product);
+      return;
+    }
+    if (product.id && existing.id && product.id !== existing.id) idRedirects.set(product.id, existing.id);
+    existing.locations = existing.locations || makeEmptyLocations();
+    stockLocations.forEach((location) => {
+      existing.locations[location] = Number(existing.locations[location] || 0) + Number(product.locations[location] || 0);
+    });
+    if (!existing.batch && product.batch) existing.batch = product.batch;
+    if (!existing.factory && product.factory) existing.factory = product.factory;
+    syncProductTotal(existing);
+    changed = true;
+  });
+
+  if (mergedStock.length !== stockList.length) {
+    targetState.stock = mergedStock;
+    changed = true;
+  }
+
+  (targetState.stockEntries || []).forEach((entry) => {
+    if (entry.productId && idRedirects.has(entry.productId)) {
+      entry.productId = idRedirects.get(entry.productId);
+      changed = true;
+    }
+    const cleanEntryProduct = stripStockLocationSuffixFromProductName(entry.product);
+    if (cleanEntryProduct && entry.product !== cleanEntryProduct) {
+      entry.product = cleanEntryProduct;
+      changed = true;
+    }
+  });
+
+  (targetState.orders || []).forEach((order) => {
+    if (order.productId && idRedirects.has(order.productId)) {
+      order.productId = idRedirects.get(order.productId);
+      changed = true;
+    }
+    const cleanOrderProduct = stripStockLocationSuffixFromProductName(order.product);
+    if (cleanOrderProduct && order.product !== cleanOrderProduct) {
+      order.product = cleanOrderProduct;
+      changed = true;
+    }
+    (order.items || []).forEach((item) => {
+      if (item.productId && idRedirects.has(item.productId)) {
+        item.productId = idRedirects.get(item.productId);
+        changed = true;
+      }
+      const cleanItemProduct = stripStockLocationSuffixFromProductName(item.product);
+      if (cleanItemProduct && item.product !== cleanItemProduct) {
+        item.product = cleanItemProduct;
+        changed = true;
+      }
+    });
+  });
+
+  (targetState.movements || []).forEach((movement) => {
+    if (movement.productId && idRedirects.has(movement.productId)) {
+      movement.productId = idRedirects.get(movement.productId);
+      changed = true;
+    }
+    const cleanMovementProduct = stripStockLocationSuffixFromProductName(movement.product);
+    if (cleanMovementProduct && movement.product !== cleanMovementProduct) {
+      movement.product = cleanMovementProduct;
+      changed = true;
+    }
+  });
+
+  return changed;
+}
+
+function manualStockEntryDeleteKey(entry) {
+  if (!entry?.movementType) return "";
+  return [
+    "manual",
+    entry.date || "",
+    normalizeProductKey(entry.product || ""),
+    normalizeLocation(entry.location || entry.unit || ""),
+    normalizeSearch(entry.movementType || ""),
+    Number(entry.quantity || 0),
+    normalizeSearch(entry.observation || "")
+  ].join("|");
+}
+
+function isDeletedManualStockEntry(entry, deletedKeys = state.deletedManualStockEntryIds) {
+  if (!entry?.movementType) return false;
+  const deletedSet = new Set(Array.isArray(deletedKeys) ? deletedKeys : []);
+  return deletedSet.has(entry.id) || deletedSet.has(manualStockEntryDeleteKey(entry));
 }
 
 function syncProductTotal(product) {
@@ -5208,7 +5335,11 @@ function deleteManualStockMovement(entryId) {
   if (!window.confirm(`Excluir o lançamento ${entry.invoice}?`)) return;
 
   changeProductLocationQty(product, location, -quantity);
-  state.stockEntries = state.stockEntries.filter((item) => item.id !== entryId);
+  state.deletedManualStockEntryIds = Array.isArray(state.deletedManualStockEntryIds) ? state.deletedManualStockEntryIds : [];
+  const deletedManualKey = manualStockEntryDeleteKey(entry);
+  if (!state.deletedManualStockEntryIds.includes(entryId)) state.deletedManualStockEntryIds.push(entryId);
+  if (deletedManualKey && !state.deletedManualStockEntryIds.includes(deletedManualKey)) state.deletedManualStockEntryIds.push(deletedManualKey);
+  state.stockEntries = state.stockEntries.filter((item) => item.id !== entryId && manualStockEntryDeleteKey(item) !== deletedManualKey);
     const movementIndex = state.movements.findIndex((movement) => movement.sourceId === entryId
     || (!movement.sourceId
       && movement.date === entry.date
@@ -5924,7 +6055,7 @@ function normalizeSearch(value) {
 }
 
 function normalizeProductKey(value) {
-  return normalizeSearch(value)
+  return normalizeSearch(stripStockLocationSuffixFromProductName(value))
     .replace(/\b\d+(?:[.,]\d+)?\s*sacos?\b/g, "")
     .replace(/\btonelada\b/g, "ton")
     .replace(/tona/g, "ton")
@@ -5938,8 +6069,9 @@ function sameProductName(first, second) {
 }
 
 function findStockProductByName(productName) {
-  return state.stock.find((product) => sameProductName(product.product, productName))
-    || state.stock.find((product) => normalizeSearch(product.product) === normalizeSearch(productName));
+  const cleanProductName = stripStockLocationSuffixFromProductName(productName);
+  return state.stock.find((product) => sameProductName(product.product, cleanProductName))
+    || state.stock.find((product) => normalizeSearch(stripStockLocationSuffixFromProductName(product.product)) === normalizeSearch(cleanProductName));
 }
 
 function plainCustomerText(value) {
