@@ -1672,7 +1672,7 @@ function normalizeStockProductsAndEntries(targetState = state) {
 
 function manualStockEntryDeleteKey(entry) {
   if (!entry?.movementType) return "";
-  return [
+  const baseKey = [
     "manual",
     entry.date || "",
     normalizeProductKey(entry.product || ""),
@@ -1681,6 +1681,8 @@ function manualStockEntryDeleteKey(entry) {
     Number(entry.quantity || 0),
     normalizeSearch(entry.observation || "")
   ].join("|");
+  const uniqueMarker = String(entry.manualToken || entry.createdAt || "").trim();
+  return uniqueMarker ? `${baseKey}|${uniqueMarker}` : baseKey;
 }
 
 function isDeletedManualStockEntry(entry, deletedKeys = state.deletedManualStockEntryIds) {
@@ -5284,9 +5286,12 @@ function handleManualStockMovement(event) {
   changeProductLocationQty(product, location, signedQuantity);
   const document = nextManualStockDocument();
   const entryId = `ENT-${document}-${Math.random().toString(16).slice(2, 6)}`;
+  const createdAt = new Date().toISOString();
   const movementLabel = type === "entrada" ? "Entrada manual" : "Saida manual";
   state.stockEntries.unshift({
     id: entryId,
+    createdAt,
+    manualToken: `${entryId}-${createdAt}`,
     date,
     invoice: document,
     factoryOrder: reason,
