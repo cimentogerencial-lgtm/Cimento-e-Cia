@@ -4737,24 +4737,86 @@ function deleteFreightRate(rateId) {
   showToast("Frete excluído.");
 }
 
-function renderNotes() {
-  qs("#notes-count").textContent = `${state.notes.length} notas`;
-  qs("#notes-table").innerHTML = state.notes.length ? state.notes.map((note, index) => `
-    <tr>
-      <td><strong>${note.number}</strong></td>
-      <td>${note.supplier}</td>
-      <td>${note.issue.split("-").reverse().join("/")}</td>
-      <td>${note.ovNumber || "-"}</td>
-      <td>${Array.isArray(note.linkedOrderIds) && note.linkedOrderIds.length
+function daysBetweenDates(startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 9999;
+  return Math.floor((end - start) / 86400000);
+}
+
+function buildRecentImportedNotes(daysBack = 4) {
+  const notesByKey = new Map();
+  const addNote = (note, noteIndex = -1) => {
+    if (!note?.number) return;
+    const issue = note.issue || String(note.issueDateTime || "").slice(0, 10) || today;
+    const age = daysBetweenDates(issue, today);
+    if (age < 0 || age > daysBack) return;
+    const key = `${note.number}|${normalizeSearch(note.supplier)}`;
+    const current = notesByKey.get(key);
+    notesByKey.set(key, {
+      number: note.number,
+      supplier: note.supplier || "-",
+      issue,
+      ovNumber: note.ovNumber || note.factoryOrder || current?.ovNumber || "-",
+      destination: note.linkedOrderIds?.length
         ? `Pedidos ${note.linkedOrderIds.join(", ")}`
         : note.linkedOrderId
           ? `Pedido ${note.linkedOrderId}`
           : stockLocations.includes(note.location)
             ? `Estoque ${note.location}`
-            : "Distribuição pendente"}</td>
+            : current?.destination || "Distribuicao pendente",
+      items: Number(note.items || current?.items || 1),
+      status: note.status || current?.status || "Importada",
+      noteIndex
+    });
+  };
+
+  state.notes.forEach((note, index) => addNote(note, index));
+  state.stockEntries.filter(isInvoiceStockEntry).forEach((entry) => {
+    if (!entry.invoice) return;
+    const key = `${entry.invoice}|${normalizeSearch(entry.supplier)}`;
+    const current = notesByKey.get(key);
+    const allocations = entryAllocations(entry);
+    const linkedOrders = [
+      entry.linkedOrderId,
+      entry.generatedOrderId,
+      ...allocations.filter((allocation) => allocation.type === "order").map((allocation) => allocation.orderId)
+    ].filter(Boolean);
+    const stockDestinations = [
+      entry.location,
+      ...allocations.filter((allocation) => allocation.type === "stock").map((allocation) => allocation.location)
+    ].filter((location) => stockLocations.includes(location));
+    addNote({
+      number: entry.invoice,
+      supplier: entry.supplier || "-",
+      issue: entry.date || entry.issue || today,
+      ovNumber: entry.ovNumber || entry.factoryOrder || "-",
+      destination: linkedOrders.length
+        ? `Pedidos ${[...new Set(linkedOrders)].join(", ")}`
+        : stockDestinations.length
+          ? `Estoque ${[...new Set(stockDestinations)].join(", ")}`
+          : "Distribuicao pendente",
+      items: (current?.items || 0) + (current ? 0 : state.stockEntries.filter((item) => item.invoice === entry.invoice && normalizeSearch(item.supplier) === normalizeSearch(entry.supplier)).length),
+      status: entry.distributionStarted || linkedOrders.length || stockDestinations.length ? "Importada vinculada" : "Importada"
+    }, current?.noteIndex ?? -1);
+  });
+
+  return [...notesByKey.values()].sort((a, b) => String(b.issue).localeCompare(String(a.issue)) || String(b.number).localeCompare(String(a.number)));
+}
+
+function renderNotes() {
+  const recentNotes = buildRecentImportedNotes(4);
+  qs("#notes-count").textContent = `${recentNotes.length} notas`;
+  qs("#notes-table").innerHTML = recentNotes.length ? recentNotes.map((note) => `
+    <tr>
+      <td><strong>${note.number}</strong></td>
+      <td>${note.supplier}</td>
+      <td>${String(note.issue || "").split("-").reverse().join("/")}</td>
+      <td>${note.ovNumber || "-"}</td>
+      <td>${note.destination}</td>
       <td class="right">${note.items}</td>
       <td><span class="status ${statusClass(note.status)}">${note.status}</span></td>
-      <td class="right"><button class="danger-btn" type="button" data-delete-note="${index}">Excluir</button></td>
+      <td class="right"><button class="danger-btn" type="button" data-delete-note="${note.noteIndex}" data-delete-note-number="${note.number}" data-delete-note-supplier="${note.supplier}">Excluir</button></td>
     </tr>
   `).join("") : `
     <tr>
@@ -8133,8 +8195,26 @@ function importNote(xmlText, details = {}) {
   return { ok: true, note };
 }
 
-function deleteImportedNote(noteIndex) {
-  const note = state.notes[Number(noteIndex)];
+function deleteImportedNote(noteIndex, noteNumber = "", noteSupplierValue = "") {
+  let realNoteIndex = Number(noteIndex);
+  let note = state.notes[realNoteIndex];
+  if (!note && noteNumber) {
+    const supplierKey = normalizeSearch(noteSupplierValue);
+    realNoteIndex = state.notes.findIndex((item) => item.number === noteNumber && (!supplierKey || normalizeSearch(item.supplier) === supplierKey));
+    note = state.notes[realNoteIndex];
+  }
+  if (!note && noteNumber) {
+    const supplierKey = normalizeSearch(noteSupplierValue);
+    const entry = state.stockEntries.find((item) => item.invoice === noteNumber && (!supplierKey || normalizeSearch(item.supplier) === supplierKey));
+    if (entry) {
+      note = {
+        number: entry.invoice,
+        supplier: entry.supplier,
+        linkedOrderId: entry.linkedOrderId || entry.generatedOrderId || ""
+      };
+      realNoteIndex = -1;
+    }
+  }
   if (!note) return;
   const noteSupplier = normalizeSearch(note.supplier);
   const entries = state.stockEntries.filter((entry) => {
@@ -8169,7 +8249,7 @@ function deleteImportedNote(noteIndex) {
   state.stockEntries = state.stockEntries.filter((entry) => {
     return !(entry.invoice === note.number && normalizeSearch(entry.supplier) === noteSupplier);
   });
-  state.notes.splice(Number(noteIndex), 1);
+  if (realNoteIndex >= 0) state.notes.splice(realNoteIndex, 1);
   saveState();
   saveStateToCloudNow();
   renderAll();
@@ -8825,7 +8905,7 @@ function bindEvents() {
   qs("#notes-table").addEventListener("click", (event) => {
     const button = event.target.closest("[data-delete-note]");
     if (!button) return;
-    deleteImportedNote(button.dataset.deleteNote);
+    deleteImportedNote(button.dataset.deleteNote, button.dataset.deleteNoteNumber, button.dataset.deleteNoteSupplier);
   });
   qsa("[data-config-tab-button]").forEach((button) => {
     button.addEventListener("click", () => showConfigTab(button.dataset.configTabButton));
