@@ -518,7 +518,7 @@ function saveState() {
 }
 
 function saveStateToCloud() {
-  if (!cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return;
+  if (!hasFirebaseUserSession() || !cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return;
   cloudPendingLocalChanges = true;
   window.clearTimeout(cloudSaveTimer);
   cloudSaveTimer = window.setTimeout(saveStateToCloudNow, 1500);
@@ -542,6 +542,18 @@ function setupCloudDocumentRefs(settings) {
   cloudDocumentId = segments[segments.length - 1];
   cloudCollectionRef = cloudDb.collection(collectionPath);
   cloudDocRef = cloudCollectionRef.doc(cloudDocumentId);
+}
+
+function hasFirebaseUserSession() {
+  if (!window.CIMENTO_FIREBASE?.enabled) return true;
+  return Boolean(firebaseAuth?.currentUser);
+}
+
+function shouldIgnoreCloudErrorBeforeLogin(error) {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "").toLowerCase();
+  const isPermissionError = code === "permission-denied" || message.includes("permission-denied");
+  return isPermissionError && window.CIMENTO_FIREBASE?.enabled && !hasFirebaseUserSession();
 }
 
 function cloudChunkDoc(index) {
@@ -740,7 +752,7 @@ function persistCleanedCloudState() {
 }
 
 async function saveStateToCloudNow() {
-  if (!cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return;
+  if (!hasFirebaseUserSession() || !cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return;
   try {
     window.clearTimeout(cloudSaveTimer);
     cloudSaveTimer = null;
@@ -749,6 +761,7 @@ async function saveStateToCloudNow() {
     await writeCloudState();
     cloudPendingLocalChanges = false;
   } catch (error) {
+    if (shouldIgnoreCloudErrorBeforeLogin(error)) return;
     cloudPendingLocalChanges = true;
     console.error("Erro ao salvar no Firebase:", error);
     lastCloudError = error?.code || error?.message || "erro ao salvar";
@@ -773,7 +786,10 @@ async function initFirebaseSync() {
     }
     firebaseAuth = window.firebase.auth();
     firebaseReady = true;
-    if (!firebaseAuth.currentUser) return;
+    if (!firebaseAuth.currentUser) {
+      clearCloudError();
+      return;
+    }
     cloudDb = window.firebase.firestore();
     try {
       cloudDb.settings({ ignoreUndefinedProperties: true });
@@ -816,11 +832,13 @@ async function initFirebaseSync() {
       applyingCloudState = false;
       if (cleanedLiveState) persistCleanedCloudState();
     }, (error) => {
+      if (shouldIgnoreCloudErrorBeforeLogin(error)) return;
       console.error("Erro ao sincronizar Firebase:", error);
       lastCloudError = error?.code || error?.message || "erro em tempo real";
       showCloudError(`Firebase em tempo real falhou: ${lastCloudError}`);
     });
   } catch (error) {
+    if (shouldIgnoreCloudErrorBeforeLogin(error)) return;
     console.error("Erro ao conectar Firebase:", error);
     cloudReady = false;
     lastCloudError = error?.code || error?.message || "erro desconhecido";
@@ -8534,10 +8552,9 @@ function importNote(xmlText, details = {}) {
   const factoryOrder = ovNumber || details.factoryOrder || "Nao informado";
   const loadedBy = cleanDriverName(note.loadedBy) || cleanDriverName(details.loadedBy) || "Nao informado";
   const entryDate = note.issue;
-  const location = normalizeLocation(details.location);
+  const location = "";
 
   note.items.forEach((item) => {
-    addStock(item.product, item.quantity, note.supplier, note.number, location);
     state.stockEntries.unshift({
       id: `ENT-${note.number}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
       date: entryDate,
@@ -8576,7 +8593,7 @@ function importNote(xmlText, details = {}) {
     saveState();
     saveStateToCloudNow();
     renderAll();
-    showToast(`NF-e ${note.number} importada e estoque atualizado.`);
+    showToast(`NF-e ${note.number} importada. Crie pedido ou defina o destino.`);
   }
   return { ok: true, note };
 }
@@ -8655,7 +8672,6 @@ async function importXmlFiles(files) {
       const result = importNote(await file.text(), {
         loadedBy: qs("#note-loader").value,
         factoryOrder: qs("#factory-order").value,
-        location: qs("#note-stock-location").value,
         silent: true
       });
       if (result?.ok) imported += 1;
@@ -8700,8 +8716,7 @@ function importSefazNotes() {
     imported += 1;
     importNote(xmlText, {
       loadedBy: qs("#sefaz-loader").value,
-      factoryOrder: "",
-      location: qs("#sefaz-stock-location").value
+      factoryOrder: ""
     });
   });
 
@@ -9285,8 +9300,7 @@ function bindEvents() {
   qs("#load-sample-note")?.addEventListener("click", () => {
     importNote(sampleXml, {
       loadedBy: qs("#note-loader").value,
-      factoryOrder: qs("#factory-order").value || "PED-FAB-9002",
-      location: qs("#note-stock-location").value
+      factoryOrder: qs("#factory-order").value || "PED-FAB-9002"
     });
   });
   qs("#xml-file").addEventListener("change", async (event) => {
