@@ -159,6 +159,7 @@ const state = {
   drivers: [],
   sellerCities: [],
   paymentRules: [],
+  deletedPaymentRuleKeys: [],
   paymentTerms: [],
   freightRates: [],
   freightTypes: {},
@@ -369,15 +370,8 @@ state.sellerCities = state.sellerCities.map((rule, index) => ({
   salesperson: state.salespeople.includes(rule.salesperson) ? rule.salesperson : state.salespeople[0] || ""
 })).filter((rule) => rule.city && rule.salesperson);
 applyDefaultSellerCitiesIfNeeded();
-state.paymentRules = Array.isArray(state.paymentRules) ? state.paymentRules : [];
-state.paymentRules = state.paymentRules.map((rule, index) => ({
-  id: rule.id || `prazo-${Date.now()}-${index}`,
-  type: ["city", "seller", "customer"].includes(rule.type) ? rule.type : "city",
-  reference: plainCustomerText(rule.reference || ""),
-  document: cleanDocument(rule.document || ""),
-  payment: state.paymentMethods.includes(rule.payment) ? rule.payment : "Boleto",
-  term: plainCustomerText(rule.term || "")
-})).filter((rule) => rule.reference && rule.payment);
+state.deletedPaymentRuleKeys = normalizeDeletedPaymentRuleKeys(state.deletedPaymentRuleKeys);
+state.paymentRules = normalizePaymentRulesList(state.paymentRules, state.deletedPaymentRuleKeys);
 applyDefaultPaymentRulesIfNeeded();
 state.paymentTerms = Array.from(new Set([
   ...state.paymentTerms,
@@ -678,7 +672,14 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.receivables = mergeObjectArray(remoteState?.receivables, localState?.receivables, (item) => item.id || `${item.origin || ""}-${item.installment || ""}-${item.dueDate || ""}`);
   merged.usersConfig = mergeObjectArray(remoteState?.usersConfig, localState?.usersConfig, (item) => item.user || normalizeSearch(item.name));
   merged.sellerCities = mergeObjectArray(remoteState?.sellerCities, localState?.sellerCities, (item) => item.id || `${normalizeSearch(item.salesperson)}-${normalizeSearch(item.city)}`);
-  merged.paymentRules = mergeObjectArray(remoteState?.paymentRules, localState?.paymentRules, (item) => item.id || `${item.type || ""}-${normalizeSearch(item.reference)}-${normalizeSearch(item.method)}-${normalizeSearch(item.term)}`);
+  merged.deletedPaymentRuleKeys = normalizeDeletedPaymentRuleKeys([
+    ...(Array.isArray(remoteState?.deletedPaymentRuleKeys) ? remoteState.deletedPaymentRuleKeys : []),
+    ...(Array.isArray(localState?.deletedPaymentRuleKeys) ? localState.deletedPaymentRuleKeys : [])
+  ]);
+  merged.paymentRules = normalizePaymentRulesList(
+    mergeObjectArray(remoteState?.paymentRules, localState?.paymentRules, (item) => paymentRuleKey(item) || item.id || `${item.type || ""}-${normalizeSearch(item.reference)}-${normalizeSearch(item.payment || item.method)}-${normalizeSearch(item.term)}`),
+    merged.deletedPaymentRuleKeys
+  );
   merged.freightRates = mergeObjectArray(remoteState?.freightRates, localState?.freightRates, (item) => item.id || `${item.type || ""}-${normalizeSearch(item.city)}`);
   merged.financialAccounts = mergeObjectArray(remoteState?.financialAccounts, localState?.financialAccounts, (item) => item.id || normalizeSearch(item.name));
   merged.notes = mergeObjectArray(remoteState?.notes, localState?.notes, (item) => item.id || item.invoice || item.key);
@@ -6289,10 +6290,68 @@ function removeLegacyDivinopolisEdmilsonAssignments() {
   return changed;
 }
 
-function upsertPaymentRule(type, reference, payment, term, document = "") {
+function paymentRuleKey(rule) {
+  if (!rule) return "";
+  const type = String(rule.type || "city").trim().toLowerCase();
+  const reference = normalizeSearch(rule.reference || "");
+  const documentValue = cleanDocument(rule.document || "");
+  const payment = normalizeSearch(rule.payment || rule.method || "");
+  const term = normalizeSearch(rule.term || "");
+  if (!reference || !payment || !term) return "";
+  return [type, documentValue, reference, payment, term].join("|");
+}
+
+function normalizeDeletedPaymentRuleKeys(keys) {
+  return Array.from(new Set((Array.isArray(keys) ? keys : [])
+    .map((key) => String(key || "").trim())
+    .filter(Boolean)));
+}
+
+function normalizePaymentRulesList(rules, deletedKeys = []) {
+  const deletedSet = new Set(normalizeDeletedPaymentRuleKeys(deletedKeys));
+  const byKey = new Map();
+  (Array.isArray(rules) ? rules : []).forEach((rule, index) => {
+    if (!rule) return;
+    const incomingPayment = rule.payment || rule.method || "";
+    const normalized = {
+      id: rule.id || `prazo-${Date.now()}-${index}`,
+      type: ["city", "seller", "customer"].includes(rule.type) ? rule.type : "city",
+      reference: plainCustomerText(rule.reference || ""),
+      document: cleanDocument(rule.document || ""),
+      payment: state.paymentMethods.includes(incomingPayment) ? incomingPayment : incomingPayment || "Boleto",
+      term: plainCustomerText(rule.term || "")
+    };
+    const key = paymentRuleKey(normalized);
+    if (!key || deletedSet.has(key) || !normalized.reference || !normalized.payment || !normalized.term) return;
+    byKey.set(key, { ...(byKey.get(key) || {}), ...normalized });
+  });
+  return Array.from(byKey.values());
+}
+
+function removeDeletedPaymentRuleKey(rule) {
+  const key = paymentRuleKey(rule);
+  if (!key) return;
+  state.deletedPaymentRuleKeys = normalizeDeletedPaymentRuleKeys(state.deletedPaymentRuleKeys)
+    .filter((deletedKey) => deletedKey !== key);
+}
+
+function upsertPaymentRule(type, reference, payment, term, document = "", options = {}) {
   const cleanReference = plainCustomerText(reference);
   const cleanDoc = cleanDocument(document);
   if (!cleanReference || !payment || !term) return;
+  const candidate = {
+    type,
+    reference: cleanReference,
+    document: cleanDoc,
+    payment,
+    term: plainCustomerText(term)
+  };
+  state.deletedPaymentRuleKeys = normalizeDeletedPaymentRuleKeys(state.deletedPaymentRuleKeys);
+  if (options.restoreDeleted) {
+    removeDeletedPaymentRuleKey(candidate);
+  } else if (state.deletedPaymentRuleKeys.includes(paymentRuleKey(candidate))) {
+    return;
+  }
   const existing = state.paymentRules.find((rule) => {
     if (type === "customer" && cleanDoc) return rule.type === type && rule.document === cleanDoc;
     return rule.type === type && normalizeSearch(rule.reference) === normalizeSearch(cleanReference);
@@ -7631,14 +7690,28 @@ function addPaymentRule(type, referenceValue, payment, term, customerDocument = 
     reference = customer.name;
     documentValue = customer.document;
   }
-  upsertPaymentRule(type, reference, payment, term, documentValue);
+  upsertPaymentRule(type, reference, payment, term, documentValue, { restoreDeleted: true });
   saveState();
   renderAll();
   showToast("Regra de prazo salva.");
 }
 
 function deletePaymentRule(ruleId) {
-  state.paymentRules = state.paymentRules.filter((rule) => rule.id !== ruleId);
+  const target = state.paymentRules.find((rule) => rule.id === ruleId);
+  if (target) {
+    const key = paymentRuleKey(target);
+    if (key) {
+      state.deletedPaymentRuleKeys = normalizeDeletedPaymentRuleKeys([
+        ...(state.deletedPaymentRuleKeys || []),
+        key
+      ]);
+      state.paymentRules = state.paymentRules.filter((rule) => paymentRuleKey(rule) !== key);
+    } else {
+      state.paymentRules = state.paymentRules.filter((rule) => rule.id !== ruleId);
+    }
+  } else {
+    state.paymentRules = state.paymentRules.filter((rule) => rule.id !== ruleId);
+  }
   saveState();
   renderAll();
   showToast("Regra de prazo excluida.");
