@@ -715,7 +715,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.stock = (merged.stock || []).filter((product) => !isDeletedProduct(product, merged.deletedProductKeys));
   merged.deletedCustomerKeys = mergePrimitiveArray(remoteState?.deletedCustomerKeys, localState?.deletedCustomerKeys, (value) => cleanDocument(value) || normalizeSearch(value));
   const deletedCustomerKeys = new Set(merged.deletedCustomerKeys || []);
-  merged.customers = mergeObjectArray(remoteState?.customers, localState?.customers, (item) => cleanDocument(item.document) || normalizeSearch(item.name))
+  merged.customers = mergeLatestUpdatedObjectArray(remoteState?.customers, localState?.customers, (item) => cleanDocument(item.document) || normalizeSearch(item.name))
     .filter((customer) => !deletedCustomerKeys.has(cleanDocument(customer.document) || normalizeSearch(customer.name)));
   merged.receivables = mergeLatestUpdatedObjectArray(remoteState?.receivables, localState?.receivables, (item) => item.id || `${item.origin || ""}-${item.installment || ""}-${item.dueDate || ""}`);
   const activeOrderIds = new Set((merged.orders || []).map((order) => order.id).filter(Boolean));
@@ -1322,9 +1322,11 @@ function renderPaymentRulesSettings() {
 function renderSalespeopleSettings() {
   const options = salespersonOptions();
   qsa('[name="salesperson"]').forEach((select) => {
-    const current = select.value || select.dataset.current || state.salespeople[0] || "";
-    select.innerHTML = options;
+    const isSaleSelect = select.id === "salesperson";
+    const current = select.value || select.dataset.current || (isSaleSelect ? "" : state.salespeople[0] || "");
+    select.innerHTML = `${isSaleSelect ? '<option value="">Selecione o vendedor</option>' : ""}${options}`;
     select.value = state.salespeople.includes(current) ? current : state.salespeople[0] || "";
+    if (isSaleSelect && !state.salespeople.includes(current)) select.value = "";
   });
   const count = qs("#salespeople-count");
   if (count) count.textContent = `${state.salespeople.length} vendedores`;
@@ -1379,11 +1381,11 @@ function salespersonOptions(selected = "") {
 function renderCustomerSalespersonOptions(selected = "") {
   const select = qs("#customer-salesperson");
   if (!select) return;
-  const current = selected || select.value || state.salespeople[0] || "";
-  select.innerHTML = state.salespeople
+  const current = selected || select.value || "";
+  select.innerHTML = '<option value="">Sem vendedor definido</option>' + state.salespeople
     .map((seller) => `<option value="${escapeAttr(seller)}" ${seller === current ? "selected" : ""}>${seller}</option>`)
     .join("");
-  select.value = state.salespeople.includes(current) ? current : state.salespeople[0] || "";
+  select.value = state.salespeople.includes(current) ? current : "";
 }
 
 function customerCityText(customer) {
@@ -1446,7 +1448,7 @@ function linkedCustomerSalesperson(customer) {
 }
 
 function resolveCustomerSalesperson(customer) {
-  return linkedCustomerSalesperson(customer) || state.salespeople[0] || "";
+  return linkedCustomerSalesperson(customer);
 }
 
 function currentSaleCustomerForSalesperson() {
@@ -1471,14 +1473,15 @@ function applySaleSalesperson(customer = null) {
   if (!salespersonSelect) return "";
   const sourceCustomer = customer || currentSaleCustomerForSalesperson();
   const linkedSalesperson = linkedCustomerSalesperson(sourceCustomer);
-  const resolvedSalesperson = linkedSalesperson || state.salespeople[0] || "";
+  const selectedSalesperson = normalizeSalespersonName(salespersonSelect.value);
+  const resolvedSalesperson = linkedSalesperson || selectedSalesperson || "";
 
   // Garante que as opções existam antes de selecionar o vendedor.
   if (!salespersonSelect.options.length) {
-    salespersonSelect.innerHTML = salespersonOptions(resolvedSalesperson);
+    salespersonSelect.innerHTML = `<option value="">Selecione o vendedor</option>${salespersonOptions(resolvedSalesperson)}`;
   }
 
-  const normalizedSalesperson = normalizeSalespersonName(resolvedSalesperson) || state.salespeople[0] || "";
+  const normalizedSalesperson = normalizeSalespersonName(resolvedSalesperson);
   salespersonSelect.value = normalizedSalesperson;
   salespersonSelect.disabled = false;
   delete salespersonSelect.dataset.lockedValue;
@@ -5717,6 +5720,7 @@ function handleCustomerForm(event) {
     customer.payment = customerPayment;
     customer.paymentTerm = customerPaymentTerm;
     customer.lastPrices = customer.lastPrices || {};
+    customer.updatedAt = new Date().toISOString();
 
     state.orders.forEach((order) => {
       if (order.customerDoc === oldDocument) {
@@ -5779,6 +5783,7 @@ function updateCustomerSalesperson(documentValue, salesperson) {
   const customer = findCustomer(documentValue);
   if (!customer) return;
   customer.salesperson = state.salespeople.includes(salesperson) ? salesperson : "";
+  customer.updatedAt = new Date().toISOString();
   saveState();
   renderCustomers();
   showToast(customer.salesperson ? "Vendedor do cliente alterado." : "Cliente voltou para vendedor automatico pela cidade.");
@@ -6354,24 +6359,21 @@ function restoreDouglasSellerCitiesFromCustomers() {
 }
 
 function removeLegacyDivinopolisEdmilsonAssignments() {
-  const version = "remove-divinopolis-edmilson-2026-07-13-v1";
+  const version = "remove-divinopolis-edmilson-2026-07-29-v2";
   state.migrationVersions = state.migrationVersions || {};
-  if (state.migrationVersions[version]) return false;
+  const migrationCompleted = Boolean(state.migrationVersions[version]);
 
-  const hasDivinopolisRule = state.sellerCities.some((rule) => (
-    normalizeSearch(rule.city) === "divinopolis"
-  ));
   let changed = false;
 
-  if (!hasDivinopolisRule) {
-    state.customers.forEach((customer) => {
-      const isDivinopolis = normalizeSearch(customerCityText(customer)) === "divinopolis";
-      const isEdmilson = normalizeSearch(customer.salesperson) === "edmilson";
-      if (!isDivinopolis || !isEdmilson) return;
-      customer.salesperson = "";
-      changed = true;
-    });
-  }
+  state.customers.forEach((customer) => {
+    const isDivinopolis = normalizeSearch(customerCityText(customer)) === "divinopolis";
+    const isEdmilson = normalizeSearch(customer.salesperson) === "edmilson";
+    if (!isDivinopolis || !isEdmilson) return;
+    if (migrationCompleted && customer.updatedAt) return;
+    customer.salesperson = "";
+    customer.updatedAt = new Date().toISOString();
+    changed = true;
+  });
 
   state.migrationVersions[version] = true;
   return changed;
@@ -6545,6 +6547,7 @@ function upsertCustomer(data) {
   customer.payment = state.paymentMethods.includes(data.payment) ? data.payment : customer.payment || "";
   customer.paymentTerm = plainCustomerText(data.paymentTerm || customer.paymentTerm || "");
   customer.lastPrices = data.lastPrices || customer.lastPrices || {};
+  customer.updatedAt = new Date().toISOString();
   return normalizeCustomerRecord(customer);
 }
 
@@ -6554,6 +6557,7 @@ function fillCustomer(customer) {
   qs("#customer-name").value = customer.name || "";
   qs("#customer-address").value = customer.address || "";
   qs("#customer-phone").value = customer.phone || "";
+  qs('[name="salesperson"]').value = linkedCustomerSalesperson(customer) || "";
   applySaleSalesperson(customer);
   applyPaymentRuleForCustomer(customer);
   updateDirectLoadDestinationMode();
@@ -7036,7 +7040,7 @@ function resetSaleForm() {
   qs('[name="quantity"]').removeAttribute("max");
   qs("#sale-stock-location").disabled = false;
   qs('[name="driver"]').value = "";
-  qs('[name="salesperson"]').value = state.salespeople[0] || "";
+  qs('[name="salesperson"]').value = "";
   qs('[name="salesperson"]').disabled = false;
   qs('[name="payment"]').disabled = false;
   qs('[name="payment"]').dataset.term = "";
@@ -7250,7 +7254,8 @@ function handleSale(event) {
     document: documentValue,
     name: data.get("customer"),
     address: data.get("address"),
-    phone: data.get("phone")
+    phone: data.get("phone"),
+    salesperson: data.get("salesperson")
   });
   if (groupedDirectItems.length) {
     groupedDirectItems.forEach((item) => {
@@ -7264,7 +7269,11 @@ function handleSale(event) {
   } else {
     customer.lastPrices[product.id] = price;
   }
-  const orderSalesperson = applySaleSalesperson(customer) || linkedCustomerSalesperson(customer) || state.salespeople[0] || "";
+  const orderSalesperson = normalizeSalespersonName(data.get("salesperson")) || linkedCustomerSalesperson(customer);
+  if (!directStockLocation && !orderSalesperson) {
+    showToast("Selecione o vendedor do pedido.");
+    return;
+  }
   const salespersonField = qs('[name="salesperson"]');
   if (salespersonField && orderSalesperson) {
     salespersonField.value = orderSalesperson;
