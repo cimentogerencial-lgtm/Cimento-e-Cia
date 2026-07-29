@@ -152,12 +152,14 @@ const state = {
   deletedOrders: [],
   deletedProductKeys: [],
   deletedManualStockEntryIds: [],
+  deletedCustomerKeys: [],
   customers: [],
   receivables: [],
   usersConfig: [],
   salespeople: ["Edmilson", "Edson", "Balcao", "Vendas externas", "Douglas"],
   drivers: [],
   sellerCities: [],
+  deletedSellerCityKeys: [],
   paymentRules: [],
   deletedPaymentRuleKeys: [],
   paymentTerms: [],
@@ -276,6 +278,11 @@ if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
 state.deletedOrders = Array.isArray(state.deletedOrders) ? state.deletedOrders : [];
 state.deletedProductKeys = Array.isArray(state.deletedProductKeys) ? state.deletedProductKeys : [];
 state.deletedManualStockEntryIds = Array.isArray(state.deletedManualStockEntryIds) ? state.deletedManualStockEntryIds : [];
+state.deletedCustomerKeys = Array.isArray(state.deletedCustomerKeys) ? state.deletedCustomerKeys : [];
+state.customers = (state.customers || []).filter((customer) => {
+  const customerKey = cleanDocument(customer.document) || normalizeSearch(customer.name);
+  return !state.deletedCustomerKeys.includes(customerKey);
+});
 state.stock = Array.isArray(state.stock) ? state.stock.filter((product) => !isDeletedProduct(product)) : [];
 state.reusableOrderIds = Array.isArray(state.reusableOrderIds) ? state.reusableOrderIds : [];
 state.drivers = Array.isArray(state.drivers)
@@ -363,12 +370,13 @@ state.salespeople = Array.isArray(state.salespeople) && state.salespeople.length
   : ["Edmilson", "Edson", "Balcao", "Vendas externas", "Douglas"];
 state.salespeople = Array.from(new Set(state.salespeople.map((seller) => String(seller || "").trim()).filter(Boolean)));
 state.sellerCities = Array.isArray(state.sellerCities) ? state.sellerCities : [];
+state.deletedSellerCityKeys = Array.isArray(state.deletedSellerCityKeys) ? state.deletedSellerCityKeys : [];
 state.sellerCities = state.sellerCities.map((rule, index) => ({
   id: rule.id || `cidade-${Date.now()}-${index}`,
   city: String(rule.city || "").trim(),
   uf: String(rule.uf || "").trim().toUpperCase(),
   salesperson: state.salespeople.includes(rule.salesperson) ? rule.salesperson : state.salespeople[0] || ""
-})).filter((rule) => rule.city && rule.salesperson);
+})).filter((rule) => rule.city && rule.salesperson && !state.deletedSellerCityKeys.includes(sellerCityKey(rule)));
 applyDefaultSellerCitiesIfNeeded();
 state.deletedPaymentRuleKeys = normalizeDeletedPaymentRuleKeys(state.deletedPaymentRuleKeys);
 state.paymentRules = normalizePaymentRulesList(state.paymentRules, state.deletedPaymentRuleKeys);
@@ -666,6 +674,31 @@ function mergeObjectArray(remoteItems, localItems, keyFn) {
   return Array.from(map.values());
 }
 
+function mergeLatestUpdatedObjectArray(remoteItems, localItems, keyFn) {
+  const map = new Map();
+  [...(remoteItems || []), ...(localItems || [])].forEach((item) => {
+    if (!item) return;
+    const key = keyFn(item);
+    if (!key) return;
+    const current = map.get(key);
+    if (!current) {
+      map.set(key, { ...item });
+      return;
+    }
+    const currentUpdatedAt = String(current.updatedAt || "");
+    const nextUpdatedAt = String(item.updatedAt || "");
+    if (currentUpdatedAt && !nextUpdatedAt) return;
+    if (!currentUpdatedAt || nextUpdatedAt >= currentUpdatedAt) {
+      map.set(key, { ...current, ...item });
+    }
+  });
+  return Array.from(map.values());
+}
+
+function sellerCityKey(rule) {
+  return `${normalizeSearch(rule?.city || "")}|${normalizeSearch(rule?.uf || "MG")}`;
+}
+
 function mergeCloudAndLocalState(remoteState, localState) {
   const merged = Object.assign(
     cloneStateSnapshot(emptyStateTemplate),
@@ -680,10 +713,23 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.deletedProductKeys = mergePrimitiveArray(remoteState?.deletedProductKeys, localState?.deletedProductKeys, (value) => String(value || "").trim());
   merged.deletedManualStockEntryIds = mergePrimitiveArray(remoteState?.deletedManualStockEntryIds, localState?.deletedManualStockEntryIds, (value) => String(value || "").trim());
   merged.stock = (merged.stock || []).filter((product) => !isDeletedProduct(product, merged.deletedProductKeys));
-  merged.customers = mergeObjectArray(remoteState?.customers, localState?.customers, (item) => cleanDocument(item.document) || normalizeSearch(item.name));
-  merged.receivables = mergeObjectArray(remoteState?.receivables, localState?.receivables, (item) => item.id || `${item.origin || ""}-${item.installment || ""}-${item.dueDate || ""}`);
+  merged.deletedCustomerKeys = mergePrimitiveArray(remoteState?.deletedCustomerKeys, localState?.deletedCustomerKeys, (value) => cleanDocument(value) || normalizeSearch(value));
+  const deletedCustomerKeys = new Set(merged.deletedCustomerKeys || []);
+  merged.customers = mergeObjectArray(remoteState?.customers, localState?.customers, (item) => cleanDocument(item.document) || normalizeSearch(item.name))
+    .filter((customer) => !deletedCustomerKeys.has(cleanDocument(customer.document) || normalizeSearch(customer.name)));
+  merged.receivables = mergeLatestUpdatedObjectArray(remoteState?.receivables, localState?.receivables, (item) => item.id || `${item.origin || ""}-${item.installment || ""}-${item.dueDate || ""}`);
+  const activeOrderIds = new Set((merged.orders || []).map((order) => order.id).filter(Boolean));
+  const localOrderIds = new Set((localState?.orders || []).map((order) => order.id).filter(Boolean));
+  const localReceivableIds = new Set((localState?.receivables || []).map((item) => item.id).filter(Boolean));
+  merged.receivables = (merged.receivables || []).filter((item) => {
+    if (!activeOrderIds.has(item.origin)) return false;
+    return !localOrderIds.has(item.origin) || localReceivableIds.has(item.id);
+  });
   merged.usersConfig = mergeObjectArray(remoteState?.usersConfig, localState?.usersConfig, (item) => item.user || normalizeSearch(item.name));
-  merged.sellerCities = mergeObjectArray(remoteState?.sellerCities, localState?.sellerCities, (item) => item.id || `${normalizeSearch(item.salesperson)}-${normalizeSearch(item.city)}`);
+  merged.deletedSellerCityKeys = mergePrimitiveArray(remoteState?.deletedSellerCityKeys, localState?.deletedSellerCityKeys, (value) => String(value || "").trim());
+  const deletedSellerCityKeys = new Set(merged.deletedSellerCityKeys || []);
+  merged.sellerCities = mergeObjectArray(remoteState?.sellerCities, localState?.sellerCities, sellerCityKey)
+    .filter((rule) => !deletedSellerCityKeys.has(sellerCityKey(rule)));
   merged.deletedPaymentRuleKeys = normalizeDeletedPaymentRuleKeys([
     ...(Array.isArray(remoteState?.deletedPaymentRuleKeys) ? remoteState.deletedPaymentRuleKeys : []),
     ...(Array.isArray(localState?.deletedPaymentRuleKeys) ? localState.deletedPaymentRuleKeys : [])
@@ -693,7 +739,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
     merged.deletedPaymentRuleKeys
   );
   merged.freightRates = mergeObjectArray(remoteState?.freightRates, localState?.freightRates, (item) => item.id || `${item.type || ""}-${normalizeSearch(item.city)}`);
-  merged.financialAccounts = mergeObjectArray(remoteState?.financialAccounts, localState?.financialAccounts, (item) => item.id || normalizeSearch(item.name));
+  merged.financialAccounts = mergeLatestUpdatedObjectArray(remoteState?.financialAccounts, localState?.financialAccounts, (item) => item.id || normalizeSearch(item.name));
   merged.notes = mergeObjectArray(remoteState?.notes, localState?.notes, (item) => item.id || item.invoice || item.key);
   merged.stockEntries = mergeObjectArray(remoteState?.stockEntries, localState?.stockEntries, (item) => item.id || `${item.invoice || ""}-${normalizeSearch(item.product)}-${normalizeLocation(item.location)}-${item.quantity || ""}-${item.date || ""}`);
   merged.stockEntries = (merged.stockEntries || []).filter((entry) => !isDeletedManualStockEntry(entry, merged.deletedManualStockEntryIds));
@@ -721,6 +767,19 @@ function applyMergedCloudState(cloudState, shouldKeepLocalPendingChanges = false
     ? mergeCloudAndLocalState(cloudState || {}, localSnapshot)
     : cloneStateSnapshot(cloudState || {});
   replaceStateContents(nextState);
+  state.deletedCustomerKeys = Array.isArray(state.deletedCustomerKeys) ? state.deletedCustomerKeys : [];
+  const customerCountBeforeCleanup = (state.customers || []).length;
+  state.customers = (state.customers || []).filter((customer) => {
+    const customerKey = cleanDocument(customer.document) || normalizeSearch(customer.name);
+    return !state.deletedCustomerKeys.includes(customerKey);
+  });
+  const cleanedDeletedCustomers = state.customers.length !== customerCountBeforeCleanup;
+  state.deletedSellerCityKeys = Array.isArray(state.deletedSellerCityKeys) ? state.deletedSellerCityKeys : [];
+  const sellerCityCountBeforeCleanup = (state.sellerCities || []).length;
+  const deletedSellerCityKeys = new Set(state.deletedSellerCityKeys);
+  state.sellerCities = mergeObjectArray([], state.sellerCities || [], sellerCityKey)
+    .filter((rule) => !deletedSellerCityKeys.has(sellerCityKey(rule)));
+  const cleanedSellerCities = state.sellerCities.length !== sellerCityCountBeforeCleanup;
   if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
     applyUsersConfig(state.usersConfig);
     syncUsersConfigToState();
@@ -730,7 +789,7 @@ function applyMergedCloudState(cloudState, shouldKeepLocalPendingChanges = false
   const cleanedDuplicateEntries = cleanupDuplicateImportedStockEntries();
   const cleanedDivinopolisCustomers = removeLegacyDivinopolisEdmilsonAssignments();
   const normalizedStockProducts = normalizeStockProductsAndEntries();
-  return cleanedDuplicateEntries || cleanedDivinopolisCustomers || normalizedStockProducts;
+  return cleanedDuplicateEntries || cleanedDivinopolisCustomers || normalizedStockProducts || cleanedDeletedCustomers || cleanedSellerCities;
 }
 
 async function mergeLatestCloudStateBeforeSave() {
@@ -3833,7 +3892,8 @@ function buildReceivablesForOrder(order) {
       salesperson: order.salesperson || "Nao informado",
       billingStatus: "Nao faturado",
       accountId: "",
-      paymentDate: ""
+      paymentDate: "",
+      updatedAt: new Date().toISOString()
     };
   });
 }
@@ -3863,6 +3923,7 @@ function replaceOpenReceivablesForOrder(order) {
       billingStatus,
       paidValue,
       paymentDate: paidValue > 0 ? (lastPaymentDate || today) : "",
+      updatedAt: new Date().toISOString(),
       status: paidValue >= value - 0.01 && value > 0
         ? "Recebido"
         : paidValue > 0
@@ -5704,6 +5765,9 @@ function deleteCustomer(documentValue) {
     ? `Excluir ${customer.name}? Os pedidos antigos continuam registrados no historico.`
     : `Excluir ${customer.name}?`;
   if (!window.confirm(message)) return;
+  state.deletedCustomerKeys = Array.isArray(state.deletedCustomerKeys) ? state.deletedCustomerKeys : [];
+  const customerKey = cleanDocument(customer.document) || normalizeSearch(customer.name);
+  if (customerKey && !state.deletedCustomerKeys.includes(customerKey)) state.deletedCustomerKeys.push(customerKey);
   state.customers = state.customers.filter((item) => item.document !== customer.document);
   if (editingCustomerDocument === customer.document) resetCustomerForm();
   saveState();
@@ -5746,6 +5810,11 @@ function clearCustomers() {
     : "Apagar todos os clientes cadastrados?";
   if (!window.confirm(message)) return false;
 
+  state.deletedCustomerKeys = Array.isArray(state.deletedCustomerKeys) ? state.deletedCustomerKeys : [];
+  state.customers.forEach((customer) => {
+    const customerKey = cleanDocument(customer.document) || normalizeSearch(customer.name);
+    if (customerKey && !state.deletedCustomerKeys.includes(customerKey)) state.deletedCustomerKeys.push(customerKey);
+  });
   state.customers = [];
   activeCustomerSearch = "";
   qs("#customers-search").value = "";
@@ -6455,6 +6524,7 @@ async function fetchCnpjData(cnpj) {
 
 function upsertCustomer(data) {
   const documentValue = cleanDocument(data.document);
+  state.deletedCustomerKeys = (state.deletedCustomerKeys || []).filter((key) => key !== documentValue);
   let customer = state.customers.find((item) => item.document === documentValue);
   if (!customer) {
     customer = { document: documentValue, name: "", address: "", phone: "", lastPrices: {} };
@@ -7504,6 +7574,7 @@ function receiveAccount(receivable, amount = receivable.value) {
   const account = state.financialAccounts.find((item) => item.id === receivable.accountId);
   if (!account) return false;
   account.balance = Number(account.balance || 0) + Number(amount || 0);
+  account.updatedAt = new Date().toISOString();
   return true;
 }
 
@@ -7513,11 +7584,15 @@ function cancelReceivablePayment(receivableId) {
   const paidValue = Number(receivable.paidValue || 0);
   if (receivable.accountId) {
     const account = state.financialAccounts.find((item) => item.id === receivable.accountId);
-    if (account) account.balance = Number(account.balance || 0) - paidValue;
+    if (account) {
+      account.balance = Number(account.balance || 0) - paidValue;
+      account.updatedAt = new Date().toISOString();
+    }
   }
   receivable.paidValue = 0;
   receivable.paymentDate = "";
   receivable.status = "Aberto";
+  receivable.updatedAt = new Date().toISOString();
   const order = state.orders.find((item) => item.id === receivable.origin);
   if (order) order.status = "Aberto";
   saveState();
@@ -7533,6 +7608,7 @@ function receiveReceivableValue(receivable, amount, paymentDate = today) {
   receivable.paidValue = Number(receivable.paidValue || 0) + payAmount;
   receivable.paymentDate = paymentDate || today;
   receivable.status = receivableBalance(receivable) <= 0.009 ? "Recebido" : "Parcial";
+  receivable.updatedAt = new Date().toISOString();
   return true;
 }
 
@@ -7540,6 +7616,7 @@ function updateReceivableField(receivableId, field, value) {
   const receivable = state.receivables.find((item) => item.id === receivableId);
   if (!receivable || (receivable.status === "Recebido" && field !== "billingStatus")) return;
   receivable[field] = value;
+  receivable.updatedAt = new Date().toISOString();
   const order = state.orders.find((item) => item.id === receivable.origin);
   if (order && field === "payment") order.payment = value;
   saveState();
@@ -7867,6 +7944,8 @@ function addSellerCity(city, uf, salesperson) {
     showToast("Cidade ja cadastrada para essa UF.");
     return;
   }
+  const newRule = { city: cleanCity, uf: cleanUf };
+  state.deletedSellerCityKeys = (state.deletedSellerCityKeys || []).filter((key) => key !== sellerCityKey(newRule));
   state.sellerCities.push({
     id: `cidade-${Date.now()}`,
     city: cleanCity,
@@ -7889,9 +7968,13 @@ function saveSellerCity(ruleId) {
     return;
   }
   const oldCity = rule.city;
+  const oldKey = sellerCityKey(rule);
   rule.city = city;
   rule.uf = uf || "";
   rule.salesperson = salesperson;
+  const newKey = sellerCityKey(rule);
+  state.deletedSellerCityKeys = (state.deletedSellerCityKeys || []).filter((key) => key !== newKey);
+  if (oldKey !== newKey && !state.deletedSellerCityKeys.includes(oldKey)) state.deletedSellerCityKeys.push(oldKey);
   state.paymentRules.forEach((paymentRule) => {
     if (paymentRule.type === "city" && normalizeSearch(paymentRule.reference) === normalizeSearch(oldCity)) {
       paymentRule.reference = city;
@@ -7903,16 +7986,40 @@ function saveSellerCity(ruleId) {
 }
 
 function deleteSellerCity(ruleId) {
-  state.sellerCities = state.sellerCities.filter((rule) => rule.id !== ruleId);
+  const rule = state.sellerCities.find((item) => item.id === ruleId);
+  if (rule) {
+    const key = sellerCityKey(rule);
+    state.deletedSellerCityKeys = state.deletedSellerCityKeys || [];
+    if (!state.deletedSellerCityKeys.includes(key)) state.deletedSellerCityKeys.push(key);
+  }
+  state.sellerCities = state.sellerCities.filter((item) => item.id !== ruleId);
   saveState();
   renderAll();
   showToast("Cidade removida.");
 }
 
+function clearSellerCities() {
+  if (!state.sellerCities.length) {
+    showToast("Nao ha cidades cadastradas para excluir.");
+    return;
+  }
+  if (!window.confirm(`Excluir todas as ${state.sellerCities.length} cidades cadastradas?`)) return;
+  state.deletedSellerCityKeys = state.deletedSellerCityKeys || [];
+  state.sellerCities.forEach((rule) => {
+    const key = sellerCityKey(rule);
+    if (!state.deletedSellerCityKeys.includes(key)) state.deletedSellerCityKeys.push(key);
+  });
+  state.sellerCities = [];
+  saveState();
+  saveStateToCloudNow();
+  renderAll();
+  showToast("Todas as cidades foram excluidas.");
+}
+
 function addFinancialAccount(name) {
   const cleanName = name.trim();
   if (!cleanName) return;
-  state.financialAccounts.push({ id: makeId(cleanName), name: cleanName, balance: 0 });
+  state.financialAccounts.push({ id: makeId(cleanName), name: cleanName, balance: 0, updatedAt: new Date().toISOString() });
   saveState();
   renderAll();
   showToast("Conta financeira adicionada.");
@@ -7922,6 +8029,7 @@ function saveFinancialAccount(accountId, name) {
   const account = state.financialAccounts.find((item) => item.id === accountId);
   if (!account) return;
   account.name = name.trim() || account.name;
+  account.updatedAt = new Date().toISOString();
   saveState();
   renderAll();
   showToast("Conta financeira salva.");
@@ -9464,6 +9572,7 @@ function bindEvents() {
     qs("#seller-city-filter").value = "";
     renderSellerCitiesSettings();
   });
+  qs("#clear-seller-cities").addEventListener("click", clearSellerCities);
   qs("#seller-cities-table").addEventListener("click", (event) => {
     const saveButton = event.target.closest("[data-save-seller-city]");
     if (saveButton) {
