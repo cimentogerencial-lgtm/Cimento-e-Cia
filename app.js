@@ -71,7 +71,6 @@ const permissionModules = [
   { id: "logistica", label: "Logistica" },
   { id: "fretes", label: "Fretes" },
   { id: "financeiro", label: "Financeiro" },
-  { id: "boletos", label: "Boletos Omie" },
   { id: "relatorios", label: "Relatorios" },
   { id: "notas", label: "Notas fiscais" },
   { id: "configuracoes", label: "Configurações" }
@@ -1420,6 +1419,17 @@ function customerAddressWithoutCity(customer) {
   return withoutCep || customer?.address || "-";
 }
 
+function customerFullAddress(parts = {}) {
+  const cityUf = [parts.city, parts.uf].filter(Boolean).join(" - ");
+  return [
+    parts.street,
+    parts.number,
+    parts.complement,
+    parts.neighborhood,
+    cityUf
+  ].map((value) => plainCustomerText(value || "")).filter(Boolean).join(", ");
+}
+
 function normalizeSalespersonName(name) {
   const typedName = plainCustomerText(name || "");
   if (!typedName) return "";
@@ -1475,13 +1485,8 @@ function applySaleSalesperson(customer = null) {
   const linkedSalesperson = linkedCustomerSalesperson(sourceCustomer);
   const selectedSalesperson = normalizeSalespersonName(salespersonSelect.value);
   const resolvedSalesperson = linkedSalesperson || selectedSalesperson || "";
-
-  // Garante que as opções existam antes de selecionar o vendedor.
-  if (!salespersonSelect.options.length) {
-    salespersonSelect.innerHTML = `<option value="">Selecione o vendedor</option>${salespersonOptions(resolvedSalesperson)}`;
-  }
-
   const normalizedSalesperson = normalizeSalespersonName(resolvedSalesperson);
+  salespersonSelect.innerHTML = `<option value="">Selecione o vendedor</option>${salespersonOptions(normalizedSalesperson)}`;
   salespersonSelect.value = normalizedSalesperson;
   salespersonSelect.disabled = false;
   delete salespersonSelect.dataset.lockedValue;
@@ -3791,7 +3796,10 @@ function renderLogistics() {
 
   const orders = state.orders.filter((order) => {
     const dateMatches = order.date === filterDate;
-    const stageMatches = !filterStage || order.deliveryStatus === filterStage;
+    const stageMatches = !filterStage
+      || (filterStage === "Nao entregue"
+        ? order.deliveryStatus !== "Entregue"
+        : order.deliveryStatus === filterStage);
     return dateMatches && stageMatches;
   });
 
@@ -3901,11 +3909,6 @@ function buildReceivablesForOrder(order) {
   });
 }
 
-function migrateExistingBoletoReceipts() {
-  if (state.autoBoletoReceiptsMigrated) return;
-  state.autoBoletoReceiptsMigrated = true;
-  saveState();
-}
 
 function replaceOpenReceivablesForOrder(order) {
   const existing = state.receivables.filter((item) => item.origin === order.id);
@@ -3938,73 +3941,6 @@ function replaceOpenReceivablesForOrder(order) {
   state.receivables.unshift(...rebuilt);
 }
 
-function boletoExportReceivables() {
-  const start = qs("#omie-export-start")?.value || "";
-  const end = qs("#omie-export-end")?.value || "";
-  const status = qs("#omie-export-status")?.value || "";
-  const billing = qs("#omie-export-billing")?.value || "";
-  return state.receivables.filter((item) => {
-    const order = state.orders.find((orderItem) => orderItem.id === item.origin);
-    const issueDate = order?.date || "";
-    const isBoleto = normalizeSearch(item.payment).includes("boleto");
-    const startMatches = !start || issueDate >= start;
-    const endMatches = !end || issueDate <= end;
-    const statusMatches = !status || item.status === status;
-    const billingMatches = !billing || (item.billingStatus || "Nao faturado") === billing;
-    return isBoleto && startMatches && endMatches && statusMatches && billingMatches;
-  });
-}
-
-function boletoExportOrders() {
-  const orderIds = new Set(boletoExportReceivables().map((item) => item.origin));
-  return state.orders
-    .filter((order) => orderIds.has(order.id))
-    .sort((a, b) => String(a.id || "").localeCompare(String(b.id || "")));
-}
-
-function renderBoletoExportSummary() {
-  const receivables = boletoExportReceivables();
-  const orders = new Set(receivables.map((item) => item.origin));
-  const total = receivables.reduce((sum, item) => sum + receivableBalance(item), 0);
-  const label = `${orders.size} pedidos / ${receivables.length} boletos / ${money.format(total)}`;
-  const counter = qs("#omie-export-count");
-  if (counter) counter.textContent = label;
-  renderOmieBoletosTable(receivables);
-}
-
-function renderOmieBoletosTable(receivables = boletoExportReceivables()) {
-  const table = qs("#omie-boletos-table");
-  if (!table) return;
-  const rows = [...receivables].sort((a, b) => {
-    const orderA = state.orders.find((order) => order.id === a.origin);
-    const orderB = state.orders.find((order) => order.id === b.origin);
-    return String(orderA?.date || "").localeCompare(String(orderB?.date || "")) || String(a.due || "").localeCompare(String(b.due || ""));
-  });
-  table.innerHTML = rows.length ? rows.map((item) => {
-    const order = state.orders.find((orderItem) => orderItem.id === item.origin);
-    return `
-      <tr>
-        <td>${formatDateBR(order?.date || "")}</td>
-        <td>${formatDateBR(item.due)}</td>
-        <td><strong>${item.origin}</strong> <span class="muted">${item.installment || ""}</span></td>
-        <td>${item.customer}</td>
-        <td>${item.salesperson || "Nao informado"}</td>
-        <td class="right">${money.format(item.value)}</td>
-        <td><span class="status ${statusClass(item.status)}">${item.status}</span></td>
-        <td>
-          <select class="table-select" data-omie-billing="${item.id}">
-            <option value="Nao faturado" ${(item.billingStatus || "Nao faturado") === "Nao faturado" ? "selected" : ""}>Nao faturado</option>
-            <option value="Faturado" ${item.billingStatus === "Faturado" ? "selected" : ""}>Faturado</option>
-          </select>
-        </td>
-      </tr>
-    `;
-  }).join("") : `
-    <tr>
-      <td colspan="8" class="center muted">Nenhum boleto encontrado para os filtros selecionados.</td>
-    </tr>
-  `;
-}
 
 function renderReceivables() {
   const clientFilter = normalizeSearch(qs("#finance-filter-client")?.value || "");
@@ -4030,6 +3966,10 @@ function renderReceivables() {
   const valueTotal = receivables.reduce((sum, item) => sum + Number(item.value || 0), 0);
   const paidTotal = receivables.reduce((sum, item) => sum + Number(item.paidValue || 0), 0);
   const balanceTotal = receivables.reduce((sum, item) => sum + receivableBalance(item), 0);
+  const overdueTotal = receivables.reduce((sum, item) => {
+    const balance = receivableBalance(item);
+    return balance > 0 && item.due && item.due < today ? sum + balance : sum;
+  }, 0);
   const totalPages = Math.max(1, Math.ceil(receivables.length / financePageSize));
   financeCurrentPage = Math.min(Math.max(1, financeCurrentPage), totalPages);
   const pageStart = (financeCurrentPage - 1) * financePageSize;
@@ -4038,6 +3978,8 @@ function renderReceivables() {
   qs("#finance-value-total").textContent = money.format(valueTotal);
   qs("#finance-paid-total").textContent = money.format(paidTotal);
   qs("#finance-balance-total").textContent = money.format(balanceTotal);
+  qs("#finance-open").textContent = money.format(balanceTotal);
+  qs("#finance-overdue").textContent = money.format(overdueTotal);
   const pageInfo = qs("#finance-page-info");
   if (pageInfo) pageInfo.textContent = receivables.length
     ? `${pageStart + 1} - ${pageEnd} de ${receivables.length} recebimentos`
@@ -4092,7 +4034,6 @@ function renderReceivables() {
     </tr>
   `;
   renderPaymentMethods();
-  renderBoletoExportSummary();
 }
 
 function escapeHtml(value) {
@@ -4103,183 +4044,6 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;");
 }
 
-function installmentCountForOrder(orderId) {
-  return state.receivables.filter((item) => item.origin === orderId).length || 1;
-}
-
-function firstDueForOrder(orderId) {
-  return state.receivables
-    .filter((item) => item.origin === orderId)
-    .map((item) => item.due)
-    .filter(Boolean)
-    .sort()[0] || today;
-}
-
-function downloadFile(fileName, content, mimeType) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function exportBoletoOmieSpreadsheetLayout() {
-  const orders = boletoExportOrders();
-  if (!orders.length) {
-    showToast("Nenhum pedido com boleto encontrado para exportar.");
-    return;
-  }
-  const category = qs("#omie-export-category").value.trim() || "VENDA DE MERCADORIAS";
-  const account = qs("#omie-export-account").value.trim() || "BANCO";
-  const stockLocation = qs("#omie-export-stock-location").value.trim() || "DIVINA“POLIS";
-  const headers = [
-    "Código de Integração",
-    "Cliente * (Razao Social, Nome Fantasia, CNPJ ou CPF)",
-    "Previsao de Faturamento *",
-    "Categoria *",
-    "Numero de Parcelas *",
-    "Vendedor",
-    "Conta Corrente *",
-    "No do Pedido do Cliente",
-    "# Item",
-    "Produto * (Código ou Descrição)",
-    "Local de Estoque * (Código ou Descrição)",
-    "Quantidade *",
-    "Preco Unitario de Venda *",
-    "Valor do Desconto",
-    "Observações do Pedido"
-  ];
-  const rows = orders.map((order) => {
-    const customerKey = order.customerDoc ? formatDocument(order.customerDoc) : order.customer;
-    return [
-      order.id,
-      customerKey,
-      formatDateBR(firstDueForOrder(order.id)),
-      category,
-      installmentCountForOrder(order.id),
-      order.salesperson || "",
-      account,
-      order.id,
-      1,
-      order.product || "",
-      stockLocation,
-      Number(order.qty || 0).toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: 4 }),
-      Number(order.price || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 6 }),
-      "0",
-      `Pedido ${order.id} - ${order.payment || "Boleto"}`
-    ];
-  });
-  const html = `<!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <style>
-          table { border-collapse: collapse; font-family: Arial, sans-serif; }
-          th, td { border: 1px solid #999; padding: 6px; mso-number-format:"\\@"; }
-          th { background: #d9ead3; font-weight: bold; }
-          .title { background: #1f6f45; color: #fff; font-size: 16px; }
-        </style>
-      </head>
-      <body>
-        <table>
-          <tr><th class="title" colspan="${headers.length}">OMIE - PEDIDO DE VENDA - BOLETOS</th></tr>
-          <tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
-          ${rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}
-        </table>
-      </body>
-    </html>`;
-  downloadFile(`omie_boletos_${today}.xls`, html, "application/vnd.ms-excel;charset=utf-8");
-  showToast(`${orders.length} pedidos de boleto exportados.`);
-}
-
-function exportBoletoOmieSpreadsheet() {
-  const orders = boletoExportOrders();
-  if (!orders.length) {
-    showToast("Nenhum pedido com boleto encontrado para exportar.");
-    return;
-  }
-  const category = qs("#omie-export-category").value.trim() || "VENDA DE MERCADORIAS";
-  const account = qs("#omie-export-account").value.trim() || "BANCO";
-  const stockLocation = qs("#omie-export-stock-location").value.trim() || "DIVINA“POLIS";
-  const td = (value = "", className = "") => `<td class="${className}">${escapeHtml(value)}</td>`;
-  const blanks = (count) => Array.from({ length: count }, () => td()).join("");
-  const orderBillingStatus = (orderId) => {
-    const items = state.receivables.filter((item) => item.origin === orderId);
-    return items.some((item) => item.billingStatus === "Faturado") ? "Faturado" : "Nao faturado";
-  };
-  const blocks = orders.map((order) => {
-    const customerKey = order.customerDoc ? formatDocument(order.customerDoc) : order.customer;
-    const qty = Number(order.qty || 0).toLocaleString("pt-BR", { maximumFractionDigits: 4 });
-    const price = Number(order.price || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
-    const notes = `Pedido ${order.id} - Boleto - ${orderBillingStatus(order.id)}`;
-    return `
-      <tr>${td("1. Dados da Venda", "section")}${blanks(30)}</tr>
-      <tr>
-        ${td("Código de Integração", "header")}${blanks(2)}
-        ${td("Cliente * (Razao Social, Nome Fantasia, CNPJ ou CPF)", "header")}
-        ${td("Previsao de Faturamento *", "header")}
-        ${td("Categoria *", "header")}
-        ${td("Numero de Parcelas *", "header")}
-        ${td("Vendedor", "header")}
-        ${td("Projeto", "header")}
-        ${td("Conta Corrente *", "header")}
-        ${td("No do Pedido do Cliente", "header")}
-        ${td("No do Contrato de Venda", "header")}
-        ${td("Contato", "header")}
-        ${td("Observações do Pedido", "header")}${blanks(17)}
-      </tr>
-      <tr>
-        ${td(order.id)}${blanks(2)}
-        ${td(customerKey)}
-        ${td(formatDateBR(firstDueForOrder(order.id)))}
-        ${td(category)}
-        ${td(installmentCountForOrder(order.id))}
-        ${td(order.salesperson || "")}
-        ${td("")}
-        ${td(account)}
-        ${td(order.id)}
-        ${td("")}
-        ${td("")}
-        ${td(notes)}${blanks(17)}
-      </tr>
-      <tr>${td("2. Cenário Fiscal", "section")}${blanks(1)}${td("3. E-mail para o Cliente", "section")}${blanks(28)}</tr>
-      <tr>${td("Consumo Final?", "header")}${blanks(2)}${td("Cenário Fiscal", "header")}${td("Dados Adicionais para a Nota Fiscal", "header")}${td("Enviar tambem o Boleto de Cobranca?", "header")}${blanks(1)}${td("Enviar tambem o Link de Cobranca?", "header")}${td("Enviar tambem o Pix de Cobranca?", "header")}${td("Utilizar os seguintes enderecos de E-mail", "header")}${blanks(21)}</tr>
-      <tr>${td("Sim")}${blanks(2)}${td("Padrao")}${td("")}${td("Nao")}${blanks(1)}${td("Nao")}${td("Nao")}${td("")}${blanks(21)}</tr>
-      <tr>${td("4. Frete e Outras Despesas", "section")}${blanks(30)}</tr>
-      <tr>${td("Tipo do Frete", "header")}${blanks(2)}${td("Transportadora (Razao Social, Nome Fantasia, CNPJ ou CPF)", "header")}${td("Placa do Veiculo", "header")}${td("UF da Placa", "header")}${td("RNTRC (ANTT)", "header")}${td("Quantidade de Volumes", "header")}${td("Especie dos Volumes", "header")}${td("Marca dos Volumes", "header")}${td("Numeracao dos Volumes", "header")}${td("Numero do Lacre", "header")}${td("Peso Liquido (Kg)", "header")}${td("Peso Bruto (Kg)", "header")}${td("Valor do Frete", "header")}${td("Valor do Seguro", "header")}${td("Outras Despesas Acessorias", "header")}${td("Previsão de Entrega", "header")}${td("Codigo de Rastreio", "header")}${blanks(12)}</tr>
-      <tr>${td("9 - Sem Frete")}${blanks(30)}</tr>
-      <tr>${td("5. Itens do Pedido de Venda", "section")}${blanks(30)}</tr>
-      <tr>${td("# Item", "header")}${blanks(1)}${td("Código de Integração", "header")}${td("Produto * (Código ou Descrição)", "header")}${td("Local de Estoque * (Código ou Descrição)", "header")}${td("Quantidade *", "header")}${td("Preco Unitario de Venda *", "header")}${td("Valor do Desconto", "header")}${td("Categoria do Item", "header")}${td("Numero do Pedido de Compra", "header")}${td("Item do Pedido de Compra", "header")}${td("Código do Benefício Fiscal", "header")}${td("Numero da FCI", "header")}${td("Informações para a Nota Fiscal", "header")}${td("Peso Liquido (Kg)", "header")}${td("Peso Bruto (Kg)", "header")}${td("Observações do Item", "header")}${td("Nao gerar a saida de estoque ao emitir a NF-e", "header")}${td("Nao somar este item no total da NF-e", "header")}${td("Nao Gerar Conta a Receber", "header")}${td("Cenário Fiscal", "header")}${td("Numero Lote", "header")}${td("Quantidade", "header")}${td("Data de Fabricação/Produção", "header")}${td("Data de Validade", "header")}${td("Código de Agregação", "header")}${td("Reservar Estoque", "header")}${td("CFOP", "header")}${td("Unidade Tributavel", "header")}${td("Quantidade Tributavel", "header")}${td("Codigo EAN (GTIN) Tributavel", "header")}</tr>
-      <tr>${td("1")}${blanks(1)}${td(`${order.id}-1`)}${td(order.product || "")}${td(stockLocation)}${td(qty)}${td(price)}${td("0")}${td(category)}${td(order.id)}${td("1")}${td("")}${td("")}${td(notes)}${td("")}${td("")}${td(notes)}${td("Nao")}${td("Nao")}${td("Nao")}${td("Padrao")}${td("")}${td("")}${td("")}${td("")}${td("")}${td("Nao")}${td("")}${td("")}${td("")}${td("")}</tr>
-      <tr>${blanks(31)}</tr>
-    `;
-  }).join("");
-  const html = `<!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <style>
-          table { border-collapse: collapse; font-family: Arial, sans-serif; font-size: 11px; }
-          td { border: 1px solid #999; padding: 5px; white-space: pre-wrap; mso-number-format:"\\@"; }
-          .title { background: #1f6f45; color: #fff; font-size: 16px; font-weight: bold; }
-          .section { background: #d9ead3; font-weight: bold; }
-          .header { background: #edf4ea; font-weight: bold; }
-        </style>
-      </head>
-      <body>
-        <table>
-          <tr><td class="title" colspan="31">Omie_Pedido_Venda</td></tr>
-          ${blocks}
-        </table>
-      </body>
-    </html>`;
-  downloadFile(`Omie_Pedido_Venda_boletos_${today}.xls`, html, "application/vnd.ms-excel;charset=utf-8");
-  showToast(`${orders.length} pedidos de boleto exportados no layout Omie.`);
-}
 
 function reportMonths() {
   const base = new Date(`${today.slice(0, 7)}-01T00:00:00`);
@@ -5133,9 +4897,6 @@ function renderActiveView(viewId = activeViewId) {
       renderReceivables();
       renderFinancialAccounts();
       break;
-    case "boletos":
-      renderBoletoExportSummary();
-      break;
     case "relatorios":
       renderSalesReport();
       renderWeightedAverageReport();
@@ -5562,7 +5323,11 @@ function startEditCustomer(documentValue) {
   form.elements.document.value = formatDocument(customer.document);
   form.elements.name.value = customer.name;
   if (form.elements.fantasy) form.elements.fantasy.value = customer.fantasy || "";
-  form.elements.address.value = customer.address || "";
+  form.elements.street.value = customer.street || customer.address || "";
+  form.elements.number.value = customer.number || "";
+  form.elements.neighborhood.value = customer.neighborhood || "";
+  form.elements.city.value = customer.city || "";
+  form.elements.uf.value = customer.uf || "";
   form.elements.phone.value = customer.phone || "";
   renderCustomerSalespersonOptions(resolveCustomerSalesperson(customer));
   renderCustomerPaymentOptions(customer.payment || "");
@@ -5579,7 +5344,11 @@ function fillCustomerRegisterForm(customer) {
   form.elements.document.value = formatDocument(customer.document);
   form.elements.name.value = customer.name || "";
   if (form.elements.fantasy) form.elements.fantasy.value = customer.fantasy || "";
-  form.elements.address.value = customer.address || "";
+  form.elements.street.value = customer.street || customer.address || "";
+  form.elements.number.value = customer.number || "";
+  form.elements.neighborhood.value = customer.neighborhood || "";
+  form.elements.city.value = customer.city || "";
+  form.elements.uf.value = customer.uf || "";
   form.elements.phone.value = customer.phone || "";
   renderCustomerSalespersonOptions(resolveCustomerSalesperson(customer));
   renderCustomerPaymentOptions(customer.payment || "");
@@ -5677,7 +5446,12 @@ function handleCustomerForm(event) {
   const documentValue = cleanDocument(data.get("document"));
   const name = String(data.get("name")).trim();
   const fantasy = String(data.get("fantasy") || "").trim();
-  const address = String(data.get("address")).trim();
+  const street = String(data.get("street") || "").trim();
+  const number = String(data.get("number") || "").trim();
+  const neighborhood = String(data.get("neighborhood") || "").trim();
+  const city = String(data.get("city") || "").trim();
+  const uf = String(data.get("uf") || "").trim().toUpperCase();
+  const address = customerFullAddress({ street, number, neighborhood, city, uf });
   const phone = String(data.get("phone")).trim();
   const customerSalesperson = state.salespeople.includes(data.get("customerSalesperson")) ? data.get("customerSalesperson") : "";
   const customerPayment = state.paymentMethods.includes(data.get("customerPayment")) ? data.get("customerPayment") : "";
@@ -5715,6 +5489,11 @@ function handleCustomerForm(event) {
     customer.name = name;
     customer.fantasy = plainCustomerText(fantasy);
     customer.address = address;
+    customer.street = plainCustomerText(street);
+    customer.number = plainCustomerText(number);
+    customer.neighborhood = plainCustomerText(neighborhood);
+    customer.city = plainCustomerText(city);
+    customer.uf = plainCustomerText(uf);
     customer.phone = phone;
     customer.salesperson = customerSalesperson;
     customer.payment = customerPayment;
@@ -5750,6 +5529,11 @@ function handleCustomerForm(event) {
     name,
     fantasy,
     address,
+    street,
+    number,
+    neighborhood,
+    city,
+    uf,
     phone,
     salesperson: customerSalesperson,
     payment: customerPayment,
@@ -5790,7 +5574,7 @@ function updateCustomerSalesperson(documentValue, salesperson) {
 }
 
 function normalizeCustomerFormInput(event) {
-  const input = event.target.closest('[name="name"], [name="fantasy"], [name="address"]');
+  const input = event.target.closest('[name="name"], [name="fantasy"], [name="street"], [name="neighborhood"], [name="city"], [name="uf"]');
   if (!input) return;
   const cursor = input.selectionStart;
   const normalized = String(input.value || "")
@@ -9178,6 +8962,12 @@ function bindEvents() {
     setSaleFreightType(qs("#sale-freight-type").value === "retorno" ? "entrega" : "retorno");
   });
   qs('[name="salesperson"]').addEventListener("change", applyCurrentPaymentRule);
+  qs('[name="salesperson"]').addEventListener("focus", () => {
+    const select = qs('[name="salesperson"]');
+    const selected = normalizeSalespersonName(select.value);
+    select.innerHTML = `<option value="">Selecione o vendedor</option>${salespersonOptions(selected)}`;
+    select.value = selected;
+  });
   qs("#sale-stock-location").addEventListener("change", () => {
     renderSaleProductOptions();
     updateDirectLoadDestinationMode();
@@ -9301,23 +9091,6 @@ function bindEvents() {
     financeCurrentPage = 1;
     renderReceivables();
   });
-  qs("#omie-boletos-table").addEventListener("change", (event) => {
-    const billing = event.target.closest("[data-omie-billing]");
-    if (!billing) return;
-    updateReceivableField(billing.dataset.omieBilling, "billingStatus", billing.value);
-  });
-  qsa("#omie-export-start, #omie-export-end, #omie-export-status, #omie-export-billing").forEach((field) => {
-    field.addEventListener("input", renderBoletoExportSummary);
-    field.addEventListener("change", renderBoletoExportSummary);
-  });
-  qs("#clear-omie-export-filter").addEventListener("click", () => {
-    qs("#omie-export-start").value = "";
-    qs("#omie-export-end").value = "";
-    qs("#omie-export-status").value = "";
-    qs("#omie-export-billing").value = "";
-    renderBoletoExportSummary();
-  });
-  qs("#export-omie-boletos").addEventListener("click", exportBoletoOmieSpreadsheetLayout);
   qs("#sales-report-seller-filter").addEventListener("change", renderSalesReport);
   qs("#clear-sales-report-filter").addEventListener("click", () => {
     qs("#sales-report-seller-filter").value = "";
@@ -9638,7 +9411,6 @@ try {
 }
 
 try {
-  migrateExistingBoletoReceipts();
   normalizeDirectLoadDeliveries();
   migrateLegacyEntryAllocations();
   repairPendingOrderStockPostings();

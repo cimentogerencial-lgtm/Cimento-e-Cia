@@ -40,7 +40,6 @@
         <button class="nav-item" data-view="logistica">Logistica</button>
         <button class="nav-item" data-view="fretes">Fretes</button>
         <button class="nav-item" data-view="financeiro">Financeiro</button>
-        <button class="nav-item" data-view="boletos">Boletos Omie</button>
         <button class="nav-item" data-view="relatorios">Relatorios</button>
         <button class="nav-item" data-view="notas">Notas fiscais</button>
         <button class="nav-item" data-view="configuracoes">Configurações</button>
@@ -270,8 +269,20 @@
             <label>Nome fantasia
               <input name="fantasy" placeholder="Nome fantasia" />
             </label>
-            <label>Endereco
-              <input name="address" placeholder="Endereco completo" />
+            <label>Rua
+              <input name="street" placeholder="Rua ou avenida" />
+            </label>
+            <label>Numero
+              <input name="number" placeholder="Numero" />
+            </label>
+            <label>Bairro
+              <input name="neighborhood" placeholder="Bairro" />
+            </label>
+            <label>Cidade
+              <input name="city" placeholder="Cidade" />
+            </label>
+            <label>UF
+              <input name="uf" placeholder="UF" maxlength="2" />
             </label>
             <label>Telefone
               <input name="phone" placeholder="Telefone ou WhatsApp" />
@@ -740,51 +751,6 @@
             <tbody id="finance-payment-terms-table"></tbody>
           </table>
         </section>
-        <section class="panel boleto-export-panel" hidden>
-          <div class="panel-head">
-            <div>
-              <h2>Exportação de boletos</h2>
-              <p class="panel-subtitle">Planilha no formato de importacao de pedido de venda do Omie</p>
-            </div>
-            <span class="tag" id="old-boleto-export-count">0 boletos</span>
-          </div>
-          <div class="boleto-export-grid">
-            <label>Vencimento inicial
-              <input id="old-boleto-export-start" type="date" />
-            </label>
-            <label>Vencimento final
-              <input id="old-boleto-export-end" type="date" />
-            </label>
-            <label>Status
-              <select id="old-boleto-export-status">
-                <option value="">Todos</option>
-                <option value="Aberto">Aberto</option>
-                <option value="Parcial">Parcial</option>
-                <option value="Recebido">Recebido</option>
-              </select>
-            </label>
-            <label>Faturamento
-              <select id="old-boleto-export-billing">
-                <option value="">Todos</option>
-                <option value="Nao faturado">Nao faturado</option>
-                <option value="Faturado">Faturado</option>
-              </select>
-            </label>
-            <label>Categoria Omie
-              <input id="old-boleto-export-category" value="VENDA DE MERCADORIAS" />
-            </label>
-            <label>Conta Corrente Omie
-              <input id="old-boleto-export-account" value="BANCO" />
-            </label>
-            <label>Local de Estoque Omie
-              <input id="boleto-export-stock-location" value="DIVINOPOLIS" />
-            </label>
-          </div>
-          <div class="form-actions">
-            <button class="secondary-btn" id="clear-boleto-export-filter" type="button">Limpar filtros</button>
-            <button class="primary-btn" id="export-boleto-omie" type="button">Exportar planilha Omie</button>
-          </div>
-        </section>
         <section class="panel">
           <div class="panel-head">
             <div>
@@ -854,74 +820,6 @@
               </div>
             </div>
           </div>
-        </section>
-      </section>
-
-      <section class="view" id="boletos">
-        <section class="panel boleto-export-panel">
-          <div class="panel-head">
-            <div>
-              <h2>Exportação de boletos Omie</h2>
-              <p class="panel-subtitle">Filtra pela data de emissao do pedido e gera a planilha no layout do Omie</p>
-            </div>
-            <span class="tag" id="omie-export-count">0 boletos</span>
-          </div>
-          <div class="boleto-export-grid">
-            <label>Emissao inicial
-              <input id="omie-export-start" type="date" />
-            </label>
-            <label>Emissao final
-              <input id="omie-export-end" type="date" />
-            </label>
-            <label>Status financeiro
-              <select id="omie-export-status">
-                <option value="">Todos</option>
-                <option value="Aberto">Aberto</option>
-                <option value="Parcial">Parcial</option>
-                <option value="Recebido">Recebido</option>
-              </select>
-            </label>
-            <label>Faturamento
-              <select id="omie-export-billing">
-                <option value="">Todos</option>
-                <option value="Nao faturado">Nao faturado</option>
-                <option value="Faturado">Faturado</option>
-              </select>
-            </label>
-            <label>Categoria Omie
-              <input id="omie-export-category" value="VENDA DE MERCADORIAS" />
-            </label>
-            <label>Conta Corrente Omie
-              <input id="omie-export-account" value="BANCO" />
-            </label>
-            <label>Local de Estoque Omie
-              <input id="omie-export-stock-location" value="DIVINOPOLIS" />
-            </label>
-          </div>
-          <div class="form-actions">
-            <button class="secondary-btn" id="clear-omie-export-filter" type="button">Limpar filtros</button>
-            <button class="primary-btn" id="export-omie-boletos" type="button">Exportar planilha Omie</button>
-          </div>
-        </section>
-        <section class="panel boleto-export-panel">
-          <div class="panel-head">
-            <h2>Boletos filtrados</h2>
-          </div>
-          <table class="nowrap-table">
-            <thead>
-              <tr>
-                <th>Emissao</th>
-                <th>Vencimento</th>
-                <th>Pedido</th>
-                <th>Cliente</th>
-                <th>Vendedor</th>
-                <th class="right">Valor</th>
-                <th>Status financeiro</th>
-                <th>Faturamento</th>
-              </tr>
-            </thead>
-            <tbody id="omie-boletos-table"></tbody>
-          </table>
         </section>
       </section>
 
@@ -1163,7 +1061,6 @@
                 <th>Logistica</th>
                 <th>Fretes</th>
                 <th>Financeiro</th>
-                <th>Boletos Omie</th>
                 <th>Relatorios</th>
                 <th>Notas fiscais</th>
                 <th>Configurações</th>

@@ -930,7 +930,6 @@ th,
 .stock-ledger-panel,
 .sefaz-panel,
 .finance-accounts-panel,
-.boleto-export-panel,
 .sales-by-seller-panel {
   margin-top: 18px;
 }
@@ -942,27 +941,12 @@ th,
   font-weight: 700;
 }
 
-.boleto-export-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(180px, 1fr));
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
 .finance-filter-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(150px, 1fr));
   gap: 12px;
   align-items: end;
   margin-bottom: 16px;
-}
-
-.boleto-export-grid label {
-  display: grid;
-  gap: 6px;
-  color: var(--muted);
-  font-weight: 800;
-  font-size: 0.78rem;
 }
 
 .finance-filter-grid label {
@@ -973,8 +957,6 @@ th,
   font-size: 0.78rem;
 }
 
-.boleto-export-grid input,
-.boleto-export-grid select,
 .finance-filter-grid input,
 .finance-filter-grid select {
   min-height: 36px;
