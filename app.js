@@ -3706,6 +3706,13 @@ function orderFinancialStatus(order) {
   return "Aberto";
 }
 
+function orderHasFinancialPayment(orderId) {
+  return state.receivables.some((item) => (
+    item.origin === orderId
+    && (Number(item.paidValue || 0) > 0 || ["Parcial", "Recebido"].includes(item.status))
+  ));
+}
+
 function renderOrders() {
   renderInvoiceDestinationsSummary();
   const filterStartDate = qs("#orders-date-start-filter")?.value || "";
@@ -3737,7 +3744,9 @@ function renderOrders() {
       <td><span class="status ${statusClass(orderFinancialStatus(order))}">${orderFinancialStatus(order)}</span></td>
       <td class="right">
         <div class="order-actions">
-          <button class="print-btn" type="button" data-edit-order="${order.id}">Editar</button>
+          ${orderHasFinancialPayment(order.id)
+            ? `<button class="print-btn" type="button" disabled title="Pedido bloqueado porque possui baixa financeira">Bloqueado</button>`
+            : `<button class="print-btn" type="button" data-edit-order="${order.id}">Editar</button>`}
           <button class="print-btn" type="button" data-print-order="${order.id}">Imprimir</button>
         </div>
       </td>
@@ -6926,6 +6935,10 @@ function resetSaleForm() {
 function startEditOrder(orderId) {
   const order = state.orders.find((item) => item.id === orderId);
   if (!order) return;
+  if (orderHasFinancialPayment(orderId)) {
+    showToast("Pedido com recebimento baixado nao pode ser editado.");
+    return;
+  }
   editingOrderId = orderId;
   sourceEntryForOrderId = "";
   sourceEntryDistributionEnabled = false;
@@ -6995,6 +7008,12 @@ function handleSale(event) {
   const directStockLocation = directLoadStockDestination();
   const documentValue = cleanDocument(data.get("document"));
   const editingOrder = editingOrderId ? state.orders.find((item) => item.id === editingOrderId) : null;
+  if (editingOrder && orderHasFinancialPayment(editingOrder.id)) {
+    resetSaleForm();
+    renderAll();
+    showToast("Pedido bloqueado: existe uma baixa financeira registrada.");
+    return;
+  }
   const sourceEntryGroup = sourceEntryGroupForOrderIds
     .map((entryId) => state.stockEntries.find((entry) => entry.id === entryId))
     .filter(Boolean);
