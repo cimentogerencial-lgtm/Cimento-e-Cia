@@ -1365,6 +1365,25 @@ th {
   line-height: 1.25;
 }
 
+#financeiro .finance-customer-name span {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#financeiro .finance-paid-by {
+  display: block;
+  max-width: 100%;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 #financeiro .finance-receivables-table .table-select {
   width: 100%;
   min-width: 0;

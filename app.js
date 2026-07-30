@@ -436,6 +436,9 @@ state.receivables.forEach((receivable, index) => {
   receivable.salesperson = receivable.salesperson || order?.salesperson || "Nao informado";
   receivable.billingStatus = receivable.billingStatus || "Nao faturado";
   receivable.paymentDate = receivable.paymentDate || "";
+  receivable.receivedBy = receivable.receivedBy || "";
+  receivable.cancelledBy = receivable.cancelledBy || "";
+  receivable.cancelledAt = receivable.cancelledAt || "";
 });
 state.notes.forEach((note) => {
   note.linkedOrderId = note.linkedOrderId || "";
@@ -3904,6 +3907,9 @@ function buildReceivablesForOrder(order) {
       billingStatus: "Nao faturado",
       accountId: "",
       paymentDate: "",
+      receivedBy: "",
+      cancelledBy: "",
+      cancelledAt: "",
       updatedAt: new Date().toISOString()
     };
   });
@@ -3914,6 +3920,7 @@ function replaceOpenReceivablesForOrder(order) {
   const existing = state.receivables.filter((item) => item.origin === order.id);
   const paidTotal = existing.reduce((sum, item) => sum + Number(item.paidValue || 0), 0);
   const lastPaymentDate = existing.find((item) => item.paymentDate)?.paymentDate || "";
+  const lastReceivedBy = existing.find((item) => item.receivedBy)?.receivedBy || "";
   const billingStatus = existing.find((item) => item.billingStatus)?.billingStatus || "Nao faturado";
 
   state.receivables = state.receivables.filter((item) => item.origin !== order.id);
@@ -3929,6 +3936,7 @@ function replaceOpenReceivablesForOrder(order) {
       billingStatus,
       paidValue,
       paymentDate: paidValue > 0 ? (lastPaymentDate || today) : "",
+      receivedBy: paidValue > 0 ? lastReceivedBy : "",
       updatedAt: new Date().toISOString(),
       status: paidValue >= value - 0.01 && value > 0
         ? "Recebido"
@@ -4005,13 +4013,16 @@ function renderReceivables() {
           <button class="print-btn" type="button" data-finance-order="${item.origin}">Abrir</button>
         </div>
       </td>
-      <td title="${escapeAttr(item.customer)}">${item.customer}</td>
+      <td class="finance-customer-name" title="${escapeAttr(item.customer)}"><span>${escapeHtml(item.customer)}</span></td>
       <td>
         <select class="table-select" data-receivable-payment="${item.id}" data-current="${escapeAttr(item.payment || "")}" ${isSettled ? "disabled" : ""}></select>
       </td>
       <td class="right">${money.format(item.value)}</td>
       <td class="right">${money.format(paidValue)}</td>
-      <td>${item.paymentDate ? item.paymentDate.split("-").reverse().join("/") : "-"}</td>
+      <td>
+        ${item.paymentDate ? item.paymentDate.split("-").reverse().join("/") : "-"}
+        ${item.receivedBy ? `<small class="finance-paid-by" title="Baixado por ${escapeAttr(item.receivedBy)}">Por: ${escapeHtml(item.receivedBy)}</small>` : ""}
+      </td>
       <td class="right"><strong>${money.format(balance)}</strong></td>
       <td><span class="status ${statusClass(item.status)}">${item.status}</span></td>
       <td class="right">
@@ -4128,7 +4139,7 @@ function salesReportData() {
   const monthTotals = months.map((month) => {
     const orders = state.orders.filter((order) => {
       const sameMonth = String(order.date || "").slice(0, 7) === month.key;
-      const sameSeller = !sellerFilter || (order.salesperson || "NAO INFORMADO") === sellerFilter;
+      const sameSeller = !sellerFilter || reportSellerKey(order.salesperson) === sellerFilter;
       return sameMonth && sameSeller;
     });
     const value = orders.reduce((sum, order) => sum + Number(order.value || 0), 0);
@@ -4141,16 +4152,20 @@ function salesReportData() {
 function sellerReportData() {
   const sellerFilter = qs("#sales-report-seller-filter")?.value || "";
   const months = reportMonths();
-  const sellers = Array.from(new Set(state.orders.map((order) => order.salesperson || "NAO INFORMADO")))
-    .filter((seller) => !sellerFilter || seller === sellerFilter)
-    .sort();
-  return sellers.map((seller) => {
-    const orders = state.orders.filter((order) => (order.salesperson || "NAO INFORMADO") === seller);
+  const sellerGroups = new Map();
+  state.orders.forEach((order) => {
+    const key = reportSellerKey(order.salesperson);
+    if (!sellerGroups.has(key)) sellerGroups.set(key, reportSellerLabel(order.salesperson));
+  });
+  return Array.from(sellerGroups, ([key, label]) => ({ key, label }))
+    .filter((seller) => !sellerFilter || seller.key === reportSellerKey(sellerFilter))
+    .map((seller) => {
+    const orders = state.orders.filter((order) => reportSellerKey(order.salesperson) === seller.key);
     const monthValues = months.map((month) => orders
       .filter((order) => String(order.date || "").slice(0, 7) === month.key)
       .reduce((sum, order) => sum + Number(order.value || 0), 0));
     return {
-      seller,
+      seller: seller.label,
       monthValues,
       bags: orders.reduce((sum, order) => sum + Number(order.qty || 0), 0),
       orders: orders.length,
@@ -4245,12 +4260,29 @@ function exportWeightedReportExcel() {
   ]);
 }
 
+function reportSellerKey(salesperson) {
+  return normalizeSearch(salesperson || "NAO INFORMADO") || "nao informado";
+}
+
+function reportSellerLabel(salesperson) {
+  return normalizeSalespersonName(salesperson)
+    || plainCustomerText(salesperson || "NAO INFORMADO")
+    || "NAO INFORMADO";
+}
+
 function renderSalesReport() {
-  const sellerFilter = qs("#sales-report-seller-filter")?.value || "";
-  const sellers = Array.from(new Set(state.orders.map((order) => order.salesperson || "NAO INFORMADO"))).sort();
+  const selectedSellerFilter = qs("#sales-report-seller-filter")?.value || "";
+  const sellerFilter = selectedSellerFilter ? reportSellerKey(selectedSellerFilter) : "";
+  const sellerGroups = new Map();
+  state.orders.forEach((order) => {
+    const key = reportSellerKey(order.salesperson);
+    if (!sellerGroups.has(key)) sellerGroups.set(key, reportSellerLabel(order.salesperson));
+  });
+  const sellers = Array.from(sellerGroups, ([key, label]) => ({ key, label }))
+    .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
   qs("#sales-report-seller-filter").innerHTML = [
     `<option value="">Todos</option>`,
-    ...sellers.map((seller) => `<option value="${escapeAttr(seller)}" ${seller === sellerFilter ? "selected" : ""}>${seller}</option>`)
+    ...sellers.map((seller) => `<option value="${escapeAttr(seller.key)}" ${seller.key === sellerFilter ? "selected" : ""}>${seller.label}</option>`)
   ].join("");
 
   const months = reportMonths();
@@ -4262,7 +4294,7 @@ function renderSalesReport() {
   const monthTotals = months.map((month) => {
     const orders = state.orders.filter((order) => {
       const sameMonth = String(order.date || "").slice(0, 7) === month.key;
-      const sameSeller = !sellerFilter || (order.salesperson || "NAO INFORMADO") === sellerFilter;
+      const sameSeller = !sellerFilter || reportSellerKey(order.salesperson) === sellerFilter;
       return sameMonth && sameSeller;
     });
     return {
@@ -4299,19 +4331,19 @@ function renderSalesReport() {
   `;
 
   const sellerRows = sellers
-    .filter((seller) => !sellerFilter || seller === sellerFilter)
+    .filter((seller) => !sellerFilter || seller.key === sellerFilter)
     .map((seller) => {
       const monthValues = months.map((month) => {
         return state.orders
-          .filter((order) => (order.salesperson || "NAO INFORMADO") === seller)
+          .filter((order) => reportSellerKey(order.salesperson) === seller.key)
           .filter((order) => String(order.date || "").slice(0, 7) === month.key)
           .reduce((sum, order) => sum + Number(order.value || 0), 0);
       });
-      const sellerOrders = state.orders.filter((order) => (order.salesperson || "NAO INFORMADO") === seller);
+      const sellerOrders = state.orders.filter((order) => reportSellerKey(order.salesperson) === seller.key);
       const sellerBags = sellerOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
       const sellerTotal = sellerOrders.reduce((sum, order) => sum + Number(order.value || 0), 0);
       return {
-        seller,
+        seller: seller.label,
         monthValues,
         bags: sellerBags,
         orders: sellerOrders.length,
@@ -4469,18 +4501,61 @@ function renderWeightedAverageReport() {
   `;
 }
 
+function knownCityFromAddress(address = "") {
+  const normalizedAddress = normalizeSearch(address);
+  if (!normalizedAddress) return "";
+  const knownCities = Array.from(new Map([
+    ...(state.freightRates || []).map((rate) => rate.city),
+    ...(state.sellerCities || []).map((rule) => rule.city),
+    ...(state.customers || []).map((customer) => customer.city)
+  ]
+    .map((city) => plainCustomerText(city || ""))
+    .filter((city) => validAddressCityCandidate(city))
+    .map((city) => [normalizeSearch(city), city])).values())
+    .sort((a, b) => b.length - a.length);
+  return knownCities.find((city) => {
+    const cityText = normalizeSearch(city);
+    const index = normalizedAddress.indexOf(cityText);
+    if (index < 0) return false;
+    const before = normalizedAddress[index - 1] || " ";
+    const after = normalizedAddress[index + cityText.length] || " ";
+    return !/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after);
+  }) || "";
+}
+
+function validAddressCityCandidate(value = "") {
+  const candidate = plainCustomerText(value).replace(/^CIDADE\s*[:\-]?\s*/, "").trim();
+  if (!candidate || !/[A-Z]/.test(candidate)) return "";
+  if (/^\d+$/.test(candidate) || /\bCEP\b/.test(candidate)) return "";
+  if (/^(BAIRRO|JD\.?|JARDIM|CENTRO|DISTRITO)\b/.test(candidate)) return "";
+  return candidate;
+}
+
 function destinationCity(customer, address = "") {
   const city = String(customer?.city || "").trim();
   const uf = String(customer?.uf || "").trim();
   if (city) return uf ? `${city} / ${uf}` : city;
 
-  const addressParts = String(address || "")
+  const knownCity = knownCityFromAddress(address);
+  if (knownCity) return knownCity;
+
+  const cleanAddress = String(address || "").replace(/\bCEP\s*[:\-]?\s*\d{5}-?\d{3}\b/gi, "");
+  const cityUfMatch = cleanAddress.match(/(?:^|[,;-])\s*([^,;/-]+?)\s*\/\s*([A-Z]{2})(?:\b|$)/i)
+    || cleanAddress.match(/(?:^|[,;])\s*([^,;/-]+?)\s*-\s*([A-Z]{2})(?:\b|$)/i);
+  if (cityUfMatch) {
+    const matchedCity = validAddressCityCandidate(cityUfMatch[1]);
+    if (matchedCity) return `${matchedCity} / ${cityUfMatch[2].toUpperCase()}`;
+  }
+
+  const addressParts = cleanAddress
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean);
   const ufIndex = addressParts.findIndex((part) => /^[A-Z]{2}$/i.test(part));
-  if (ufIndex > 0) return `${addressParts[ufIndex - 1]} / ${addressParts[ufIndex].toUpperCase()}`;
-  if (addressParts.length >= 3) return addressParts[addressParts.length - 2];
+  if (ufIndex > 0) {
+    const matchedCity = validAddressCityCandidate(addressParts[ufIndex - 1]);
+    if (matchedCity) return `${matchedCity} / ${addressParts[ufIndex].toUpperCase()}`;
+  }
   return "-";
 }
 
@@ -6820,7 +6895,8 @@ function resetSaleForm() {
   qs("#sale-form").reset();
   qs("#customer-search").value = "";
   setSaleProductLocked(false);
-  qs('[name="price"]').value = "38.90";
+  qs('[name="price"]').value = "";
+  qs('[name="quantity"]').value = "";
   qs('[name="quantity"]').removeAttribute("max");
   qs("#sale-stock-location").disabled = false;
   qs('[name="driver"]').value = "";
@@ -7385,6 +7461,9 @@ function cancelReceivablePayment(receivableId) {
   receivable.paidValue = 0;
   receivable.paymentDate = "";
   receivable.status = "Aberto";
+  receivable.cancelledBy = getLoggedUser()?.name || getLoggedUser()?.user || "Usuario nao informado";
+  receivable.cancelledAt = new Date().toISOString();
+  receivable.receivedBy = "";
   receivable.updatedAt = new Date().toISOString();
   const order = state.orders.find((item) => item.id === receivable.origin);
   if (order) order.status = "Aberto";
@@ -7401,6 +7480,9 @@ function receiveReceivableValue(receivable, amount, paymentDate = today) {
   receivable.paidValue = Number(receivable.paidValue || 0) + payAmount;
   receivable.paymentDate = paymentDate || today;
   receivable.status = receivableBalance(receivable) <= 0.009 ? "Recebido" : "Parcial";
+  receivable.receivedBy = getLoggedUser()?.name || getLoggedUser()?.user || "Usuario nao informado";
+  receivable.cancelledBy = "";
+  receivable.cancelledAt = "";
   receivable.updatedAt = new Date().toISOString();
   return true;
 }
