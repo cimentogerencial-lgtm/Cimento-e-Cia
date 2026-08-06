@@ -3822,9 +3822,15 @@ function renderLogistics() {
       <td>${order.customer}<br><small>${order.address || "-"}</small></td>
       <td>${orderItemsHtml(order)}</td>
       <td class="right">${formatQty(order.qty)}</td>
-      <td><span class="logistics-readonly">${escapeHtml(order.driver || "Nao informado")}</span></td>
+      <td>
+        <select data-logistics-field="${order.id}" data-field="driver">
+          <option value="">Selecione o motorista</option>
+          ${cleanDriverOptions([...(state.drivers || []), order.driver || ""])
+            .map((driver) => `<option value="${escapeAttr(driver)}" ${normalizeSearch(driver) === normalizeSearch(order.driver) ? "selected" : ""}>${escapeHtml(driver)}</option>`)
+            .join("")}
+        </select>
+      </td>
       <td><input type="date" value="${escapeAttr(order.deliveryForecast)}" data-logistics-field="${order.id}" data-field="deliveryForecast" /></td>
-      <td><span class="logistics-readonly">${escapeHtml(order.observation || "-")}</span></td>
       <td>
         <div class="order-actions">
           ${order.directLoad
@@ -3837,7 +3843,7 @@ function renderLogistics() {
     </tr>
   `).join("") : `
     <tr>
-      <td colspan="8" class="empty-row">Nenhum pedido encontrado na logistica.</td>
+      <td colspan="7" class="empty-row">Nenhum pedido encontrado na logistica.</td>
     </tr>
   `;
 }
@@ -7348,13 +7354,13 @@ function handleSale(event) {
         product: entry.product || "",
         createdAt: new Date().toISOString()
       });
-      entry.generatedOrderId = entry.generatedOrderId || id;
-      entry.linkedOrderId = entry.linkedOrderId || id;
+      entry.generatedOrderId = id;
+      entry.linkedOrderId = id;
       state.notes.forEach((note) => {
         if (note.number === entry.invoice && normalizeSearch(note.supplier) === normalizeSearch(entry.supplier)) {
           note.linkedOrderIds = Array.isArray(note.linkedOrderIds) ? note.linkedOrderIds : [];
           if (!note.linkedOrderIds.includes(id)) note.linkedOrderIds.push(id);
-          note.linkedOrderId = note.linkedOrderId || id;
+          note.linkedOrderId = id;
         }
       });
       updateInvoiceDistributionStatus(entry);
@@ -7373,6 +7379,7 @@ function handleSale(event) {
   }
   resetSaleForm();
   saveState();
+  saveStateToCloudNow();
   renderCustomerOptions();
   renderAll();
   if (directEntryId && directRemaining > 0.009) {
@@ -7947,6 +7954,7 @@ function updateOrderLogisticsField(orderId, field, value) {
   if (!order || !allowed.includes(field)) return;
   order[field] = value.trim();
   saveState();
+  saveStateToCloudNow();
 }
 
 function nextOrderId(prefix = "PV") {
@@ -7979,11 +7987,9 @@ function createDirectOrderFromEntry(entryId) {
     return;
   }
   const product = findStockProductForEntry(entry)
-    || findStockProductByName(entry.product);
-  if (!product) {
-    showToast("Produto da nota nao encontrado no estoque.");
-    return;
-  }
+    || findStockProductByName(entry.product)
+    || ensureStockProduct(entry.product, entry.supplier || entry.brand || "Fornecedor importado", entry.invoice || "");
+  entry.productId = product.id;
 
   resetSaleForm();
   sourceEntryForOrderId = entry.id;
@@ -8019,11 +8025,13 @@ function createDirectOrderFromEntryGroup(entryIdsValue) {
     return;
   }
   const firstEntry = entries[0];
+  entries.forEach((entry) => {
+    const product = findStockProductForEntry(entry)
+      || findStockProductByName(entry.product)
+      || ensureStockProduct(entry.product, entry.supplier || entry.brand || "Fornecedor importado", entry.invoice || "");
+    entry.productId = product.id;
+  });
   const firstProduct = findStockProductForEntry(firstEntry);
-  if (!firstProduct) {
-    showToast("Produto da nota nao encontrado no estoque.");
-    return;
-  }
   const totalRemaining = entries.reduce((sum, entry) => sum + entryRemainingQuantity(entry), 0);
 
   resetSaleForm();
@@ -8557,6 +8565,11 @@ function importNote(xmlText, details = {}) {
   const location = "";
 
   note.items.forEach((item) => {
+    const stockProduct = ensureStockProduct(
+      item.product,
+      note.supplier || item.brand || "Fornecedor importado",
+      note.number
+    );
     state.stockEntries.unshift({
       id: `ENT-${note.number}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
       date: entryDate,
@@ -8567,6 +8580,7 @@ function importNote(xmlText, details = {}) {
       location,
       linkedOrderId: "",
       ovNumber,
+      productId: stockProduct.id,
       product: item.product,
       quantity: item.quantity,
       invoiceQuantity: item.invoiceQuantity,
