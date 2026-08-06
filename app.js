@@ -3822,15 +3822,9 @@ function renderLogistics() {
       <td>${order.customer}<br><small>${order.address || "-"}</small></td>
       <td>${orderItemsHtml(order)}</td>
       <td class="right">${formatQty(order.qty)}</td>
-      <td>
-        <select data-logistics-field="${order.id}" data-field="driver">
-          <option value="">Selecione o motorista</option>
-          ${cleanDriverOptions([...(state.drivers || []), order.driver || ""])
-            .map((driver) => `<option value="${escapeAttr(driver)}" ${normalizeSearch(driver) === normalizeSearch(order.driver) ? "selected" : ""}>${escapeHtml(driver)}</option>`)
-            .join("")}
-        </select>
-      </td>
+      <td><span class="logistics-readonly">${escapeHtml(order.driver || "Nao informado")}</span></td>
       <td><input type="date" value="${escapeAttr(order.deliveryForecast)}" data-logistics-field="${order.id}" data-field="deliveryForecast" /></td>
+      <td><span class="logistics-readonly">${escapeHtml(order.observation || "-")}</span></td>
       <td>
         <div class="order-actions">
           ${order.directLoad
@@ -3843,7 +3837,7 @@ function renderLogistics() {
     </tr>
   `).join("") : `
     <tr>
-      <td colspan="7" class="empty-row">Nenhum pedido encontrado na logistica.</td>
+      <td colspan="8" class="empty-row">Nenhum pedido encontrado na logistica.</td>
     </tr>
   `;
 }
@@ -7953,7 +7947,6 @@ function updateOrderLogisticsField(orderId, field, value) {
   if (!order || !allowed.includes(field)) return;
   order[field] = value.trim();
   saveState();
-  saveStateToCloudNow();
 }
 
 function nextOrderId(prefix = "PV") {
@@ -8564,11 +8557,6 @@ function importNote(xmlText, details = {}) {
   const location = "";
 
   note.items.forEach((item) => {
-    const stockProduct = ensureStockProduct(
-      item.product,
-      note.supplier || item.brand || "Fornecedor importado",
-      note.number
-    );
     state.stockEntries.unshift({
       id: `ENT-${note.number}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
       date: entryDate,
@@ -8579,7 +8567,6 @@ function importNote(xmlText, details = {}) {
       location,
       linkedOrderId: "",
       ovNumber,
-      productId: stockProduct.id,
       product: item.product,
       quantity: item.quantity,
       invoiceQuantity: item.invoiceQuantity,
