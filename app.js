@@ -3823,10 +3823,10 @@ function renderLogistics() {
       <td>${orderItemsHtml(order)}</td>
       <td class="right">${formatQty(order.qty)}</td>
       <td>
-        <select data-logistics-field="${order.id}" data-field="driver">
+        <select data-logistics-field="${order.id}" data-field="driver" style="width: 100%; max-width: 100%;">
           <option value="">Selecione o motorista</option>
           ${cleanDriverOptions([...(state.drivers || []), order.driver || ""])
-            .map((driver) => `<option value="${escapeAttr(driver)}" ${normalizeSearch(driver) === normalizeSearch(order.driver) ? "selected" : ""}>${escapeHtml(driver)}</option>`)
+            .map((driver) => `<option value="${escapeAttr(driver)}" ${normalizeSearch(driver) === normalizeSearch(order.driver) ? "selected" : ""}>${escapeHtml(driverFirstName(driver))}</option>`)
             .join("")}
         </select>
       </td>
@@ -5949,6 +5949,10 @@ function cleanDriverName(value) {
     .replace(/\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function driverFirstName(value) {
+  return cleanDriverName(value).split(/\s+/).filter(Boolean)[0] || "";
 }
 
 function isUsefulDriverName(value) {
