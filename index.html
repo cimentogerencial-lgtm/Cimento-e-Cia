@@ -483,7 +483,11 @@
                 </select>
               </label>
               <input name="freightType" id="sale-freight-type" type="hidden" value="entrega" />
-              <button class="secondary-btn freight-return-btn" id="toggle-freight-return" type="button" aria-pressed="false">Marcar frete de retorno</button>
+              <input name="pickupOrder" id="sale-pickup-order" type="hidden" value="false" />
+              <div class="inline-actions">
+                <button class="secondary-btn freight-return-btn" id="toggle-freight-return" type="button" aria-pressed="false">Marcar frete de retorno</button>
+                <button class="secondary-btn freight-return-btn" id="toggle-pickup-order" type="button" aria-pressed="false">Retira</button>
+              </div>
               <div class="last-sale-info">
                 <div>
                   <span>Ultimo preco</span>
@@ -898,8 +902,11 @@
               <datalist id="weighted-city-options"></datalist>
             </label>
             <label>Produto
-              <input id="weighted-product-filter" list="weighted-product-options" placeholder="Produto ou produtos separados por virgula" />
-              <datalist id="weighted-product-options"></datalist>
+              <span style="position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 42px; width: 100%;">
+                <input id="weighted-product-filter" placeholder="Produto ou produtos separados por virgula" autocomplete="off" style="width: 100%; border-radius: 8px 0 0 8px;" />
+                <button class="secondary-btn" id="toggle-weighted-product-options" type="button" aria-label="Abrir lista de produtos" style="min-width: 42px; padding: 0; border-radius: 0 8px 8px 0;">▼</button>
+                <span id="weighted-product-options" hidden style="position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 30; max-height: 280px; overflow-y: auto; padding: 6px; border: 1px solid #d5ddd6; border-radius: 10px; background: #fff; box-shadow: 0 12px 28px rgba(0,0,0,.16);"></span>
+              </span>
             </label>
             <label>De
               <input id="weighted-start-filter" type="date" />

@@ -329,6 +329,7 @@ state.orders.forEach((order) => {
   order.date = order.date || today;
   order.paymentTerm = order.paymentTerm || "";
   order.freightType = order.freightType === "retorno" ? "retorno" : "entrega";
+  order.pickupOrder = order.pickupOrder === true;
 });
 state.stockEntries = (state.stockEntries || []).filter((entry) => !isDeletedManualStockEntry(entry, state.deletedManualStockEntryIds));
 state.stockEntries.forEach((entry, index) => {
@@ -2421,10 +2422,7 @@ function renderDailyLoadBoard() {
 
   const entries = state.stockEntries
     .filter((entry) => isInvoiceStockEntry(entry) && (entry.panelDate || entry.date) === dateInput.value)
-  const warehouseOrders = state.orders
-    .filter((order) => isWarehouseLoadOrder(order) && warehouseOrderPanelDate(order) === dateInput.value)
-    .map(buildWarehouseOrderLoad);
-  const groups = [...buildDailyLoadGroups(entries), ...warehouseOrders].slice(0, 24);
+  const groups = buildDailyLoadGroups(entries).slice(0, 24);
 
   qs("#daily-load-count").textContent = `${groups.length} cargas`;
   const slots = organizeDailyLoadSlots(groups);
@@ -4158,8 +4156,11 @@ function salesReportData() {
       return sameMonth && sameSeller;
     });
     const value = orders.reduce((sum, order) => sum + Number(order.value || 0), 0);
+    const pickupValue = orders
+      .filter((order) => order.pickupOrder === true)
+      .reduce((sum, order) => sum + Number(order.value || 0), 0);
     const bags = orders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
-    return { month, orders: orders.length, value, bags, average: bags ? value / bags : 0 };
+    return { month, orders: orders.length, value, pickupValue, bags, average: bags ? value / bags : 0 };
   });
   return { sellerFilter, months, monthTotals };
 }
@@ -4212,6 +4213,7 @@ function weightedAverageSummaryRows(rows = weightedAverageOrders()) {
 function exportSalesReportExcel() {
   const { sellerFilter, months, monthTotals } = salesReportData();
   const totalValue = monthTotals.reduce((sum, item) => sum + item.value, 0);
+  const totalPickupValue = monthTotals.reduce((sum, item) => sum + item.pickupValue, 0);
   const totalBags = monthTotals.reduce((sum, item) => sum + item.bags, 0);
   const totalOrders = monthTotals.reduce((sum, item) => sum + item.orders, 0);
   downloadExcelWorkbook(`relatorio-vendas-${today}.xls`, [{
@@ -4219,6 +4221,7 @@ function exportSalesReportExcel() {
     headers: ["Indicador", ...months.map((month) => month.label), "Total"],
     rows: [
       [{ value: "Saldo de vendas" }, ...monthTotals.map((item) => ({ value: item.value, className: "money" })), { value: totalValue, className: "money" }],
+      [{ value: "Retira" }, ...monthTotals.map((item) => ({ value: item.pickupValue, className: "money" })), { value: totalPickupValue, className: "money" }],
       [{ value: "Sacos de cimento vendidos" }, ...monthTotals.map((item) => ({ value: item.bags, className: "integer" })), { value: totalBags, className: "integer" }],
       [{ value: "Preco medio por saco" }, ...monthTotals.map((item) => ({ value: item.average, className: "money" })), { value: totalBags ? totalValue / totalBags : 0, className: "money" }],
       [{ value: "Quantidade de pedidos" }, ...monthTotals.map((item) => ({ value: item.orders, className: "integer" })), { value: totalOrders, className: "integer" }]
@@ -4315,10 +4318,14 @@ function renderSalesReport() {
     return {
       orders: orders.length,
       value: orders.reduce((sum, order) => sum + Number(order.value || 0), 0),
+      pickupValue: orders
+        .filter((order) => order.pickupOrder === true)
+        .reduce((sum, order) => sum + Number(order.value || 0), 0),
       cementBags: orders.reduce((sum, order) => sum + Number(order.qty || 0), 0)
     };
   });
   const totalSales = monthTotals.reduce((sum, item) => sum + item.value, 0);
+  const totalPickupSales = monthTotals.reduce((sum, item) => sum + item.pickupValue, 0);
   const totalCementBags = monthTotals.reduce((sum, item) => sum + item.cementBags, 0);
   const totalOrders = monthTotals.reduce((sum, item) => sum + item.orders, 0);
 
@@ -4327,6 +4334,11 @@ function renderSalesReport() {
       <td><strong>Saldo de vendas</strong></td>
       ${monthTotals.map((item) => `<td class="right"><strong>${money.format(item.value)}</strong></td>`).join("")}
       <td class="right"><strong>${money.format(totalSales)}</strong></td>
+    </tr>
+    <tr>
+      <td><strong>Retira</strong></td>
+      ${monthTotals.map((item) => `<td class="right"><strong>${money.format(item.pickupValue)}</strong></td>`).join("")}
+      <td class="right"><strong>${money.format(totalPickupSales)}</strong></td>
     </tr>
     <tr>
       <td><strong>Sacos de cimento vendidos</strong></td>
@@ -4419,6 +4431,7 @@ function weightedAverageOrders() {
   const startFilter = qs("#weighted-start-filter")?.value || "";
   const endFilter = qs("#weighted-end-filter")?.value || "";
   return state.orders
+    .filter((order) => order.pickupOrder !== true)
     .flatMap((order) => {
       const orderCity = cityFromOrder(order);
       return orderItems(order).map((item) => {
@@ -4447,22 +4460,58 @@ function weightedAverageOrders() {
 
 function renderWeightedFilterOptions() {
   const cityDatalist = qs("#weighted-city-options");
-  const productDatalist = qs("#weighted-product-options");
-  if (!cityDatalist && !productDatalist) return;
+  if (!cityDatalist) return;
   const cities = Array.from(new Set(state.orders
+    .filter((order) => order.pickupOrder !== true)
     .map(cityFromOrder)
     .filter((city) => city && city !== "-")))
     .sort((a, b) => a.localeCompare(b, "pt-BR"));
   if (cityDatalist) cityDatalist.innerHTML = cities
     .map((city) => `<option value="${escapeAttr(city)}"></option>`)
     .join("");
-  const products = Array.from(new Set(state.orders
+}
+
+function weightedFilterProducts() {
+  return Array.from(new Set(state.orders
+    .filter((order) => order.pickupOrder !== true)
     .flatMap((order) => orderItems(order).map((item) => item.product || order.product || ""))
     .filter(Boolean)))
     .sort((a, b) => a.localeCompare(b, "pt-BR"));
-  if (productDatalist) productDatalist.innerHTML = products
-    .map((product) => `<option value="${escapeAttr(product)}"></option>`)
-    .join("");
+}
+
+function renderWeightedProductOptions(showAll = false) {
+  const input = qs("#weighted-product-filter");
+  const options = qs("#weighted-product-options");
+  if (!input || !options) return;
+  const parts = String(input.value || "").split(/[;,]/);
+  const search = showAll ? "" : normalizeSearch(parts[parts.length - 1] || "");
+  const selected = new Set(parts.slice(0, -1).map(normalizeSearch).filter(Boolean));
+  const products = weightedFilterProducts()
+    .filter((product) => !selected.has(normalizeSearch(product)))
+    .filter((product) => !search || normalizeSearch(product).includes(search));
+  options.innerHTML = products.length ? products.map((product) => `
+    <button type="button" data-weighted-product-option="${escapeAttr(product)}" style="display: block; width: 100%; padding: 10px 12px; border: 0; border-bottom: 1px solid #edf1ed; border-radius: 6px; background: #fff; color: #17251d; text-align: left; font: inherit; font-weight: 700; cursor: pointer;">${escapeHtml(product)}</button>
+  `).join("") : `<span style="display:block; padding:12px; color:#68766d;">Nenhum produto encontrado.</span>`;
+  options.hidden = false;
+}
+
+function selectWeightedProductOption(product) {
+  const input = qs("#weighted-product-filter");
+  const options = qs("#weighted-product-options");
+  if (!input) return;
+  const parts = String(input.value || "").split(/[;,]/).map((item) => item.trim());
+  parts[parts.length - 1] = product;
+  const unique = [];
+  const seen = new Set();
+  parts.filter(Boolean).forEach((item) => {
+    const key = normalizeSearch(item);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    unique.push(item);
+  });
+  input.value = unique.join(", ");
+  if (options) options.hidden = true;
+  renderWeightedAverageReport();
 }
 
 function renderWeightedAverageReport() {
@@ -6906,6 +6955,17 @@ function setSaleFreightType(type = "entrega") {
   }
 }
 
+function setSalePickupOrder(marked = false) {
+  const input = qs("#sale-pickup-order");
+  const button = qs("#toggle-pickup-order");
+  if (input) input.value = marked ? "true" : "false";
+  if (button) {
+    button.classList.toggle("active", marked);
+    button.setAttribute("aria-pressed", String(marked));
+    button.textContent = marked ? "Retira marcado" : "Retira";
+  }
+}
+
 function resetSaleForm() {
   editingOrderId = "";
   sourceEntryForOrderId = "";
@@ -6934,6 +6994,7 @@ function resetSaleForm() {
   qs("#last-sale-date").textContent = "Sem historico";
   qs("#sale-stock-location").value = "Divinopolis";
   setSaleFreightType("entrega");
+  setSalePickupOrder(false);
   setSaleExtraItems([]);
   setSaleExtraItemsVisible(true);
   showDirectLoadInfo();
@@ -6967,6 +7028,7 @@ function startEditOrder(orderId) {
   qs('[name="salesperson"]').disabled = false;
   qs('[name="driver"]').value = cleanDriverName(order.driver) || "";
   setSaleFreightType(order.freightType || "entrega");
+  setSalePickupOrder(order.pickupOrder === true);
   qs('[name="quantity"]').value = order.qty;
   qs('[name="price"]').value = Number(order.price || order.value / order.qty).toFixed(2);
   const editableItems = !order.directLoad ? orderItems(order) : [];
@@ -7040,6 +7102,7 @@ function handleSale(event) {
   const observation = String(data.get("observation") || "").trim();
   const driver = cleanDriverName(data.get("driver"));
   const freightType = data.get("freightType") === "retorno" ? "retorno" : "entrega";
+  const pickupOrder = data.get("pickupOrder") === "true";
   const paymentInput = qs('[name="payment"]');
 
   if (!product) {
@@ -7270,6 +7333,7 @@ function handleSale(event) {
     order.salesperson = orderSalesperson;
     order.driver = driver;
     order.freightType = freightType;
+    order.pickupOrder = pickupOrder;
     order.observation = observation;
     order.stockLocation = editingDirectLoad ? order.stockLocation : stockLocation;
 
@@ -7306,6 +7370,7 @@ function handleSale(event) {
     paymentTerm: orderPaymentTerm,
     salesperson: orderSalesperson,
     freightType,
+    pickupOrder,
     observation,
     status: "Aberto",
     deliveryStatus: isDirectLoad ? "Entregue" : "Pedido",
@@ -9080,6 +9145,9 @@ function bindEvents() {
   qs("#toggle-freight-return").addEventListener("click", () => {
     setSaleFreightType(qs("#sale-freight-type").value === "retorno" ? "entrega" : "retorno");
   });
+  qs("#toggle-pickup-order").addEventListener("click", () => {
+    setSalePickupOrder(qs("#sale-pickup-order").value !== "true");
+  });
   qs('[name="salesperson"]').addEventListener("change", applyCurrentPaymentRule);
   qs('[name="salesperson"]').addEventListener("focus", () => {
     const select = qs('[name="salesperson"]');
@@ -9225,6 +9293,25 @@ function bindEvents() {
   ["#weighted-city-filter", "#weighted-product-filter", "#weighted-start-filter", "#weighted-end-filter"].forEach((selector) => {
     qs(selector).addEventListener("input", renderWeightedAverageReport);
     qs(selector).addEventListener("change", renderWeightedAverageReport);
+  });
+  qs("#weighted-product-filter").addEventListener("focus", () => renderWeightedProductOptions(false));
+  qs("#weighted-product-filter").addEventListener("input", () => renderWeightedProductOptions(false));
+  qs("#toggle-weighted-product-options").addEventListener("click", () => {
+    const options = qs("#weighted-product-options");
+    if (!options.hidden) {
+      options.hidden = true;
+      return;
+    }
+    renderWeightedProductOptions(true);
+  });
+  qs("#weighted-product-options").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-weighted-product-option]");
+    if (button) selectWeightedProductOption(button.dataset.weightedProductOption);
+  });
+  document.addEventListener("click", (event) => {
+    if (event.target.closest("#weighted-product-filter, #toggle-weighted-product-options, #weighted-product-options")) return;
+    const options = qs("#weighted-product-options");
+    if (options) options.hidden = true;
   });
   qs("#clear-weighted-filter").addEventListener("click", () => {
     qs("#weighted-city-filter").value = "";
