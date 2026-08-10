@@ -7483,6 +7483,7 @@ function updateOrderStage(orderId, nextStage) {
   if (["Pedido", "Nao entregue"].includes(nextStage)) {
     order.deliveryStatus = nextStage;
     saveState();
+    saveStateToCloudNow();
     renderAll();
     showToast(stockReversed ? "Baixa estornada e quantidade devolvida ao estoque." : `Pedido marcado como ${nextStage}.`);
     return;
@@ -7503,6 +7504,7 @@ function updateOrderStage(orderId, nextStage) {
     if (order.directLoad) order.stockPosted = true;
     order.deliveryStatus = "Entregue";
     saveState();
+    saveStateToCloudNow();
     renderAll();
     showToast(order.directLoad ? "Pedido de carga direta marcado como entregue." : "Pedido entregue e estoque baixado.");
     return;
