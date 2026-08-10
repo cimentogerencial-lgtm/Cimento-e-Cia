@@ -571,7 +571,7 @@ function cloudChunkDoc(index) {
   return cloudCollectionRef.doc(`${cloudDocumentId}-chunk-${String(index).padStart(4, "0")}`);
 }
 
-async function readCloudStateFromSnapshot(snapshot) {
+async function readCloudStateFromSnapshot(snapshot, attempt = 0) {
   if (!snapshot.exists) return { exists: false, state: null };
   const data = snapshot.data() || {};
   if (data.state) {
@@ -585,21 +585,49 @@ async function readCloudStateFromSnapshot(snapshot) {
     return { exists: true, state: null };
   }
   const count = Number(data.chunkCount || 0);
+  const expectedRevision = String(data.revision || "");
   const chunkReads = [];
   for (let index = 0; index < count; index += 1) {
-    chunkReads.push(cloudChunkDoc(index).get());
+    chunkReads.push(cloudChunkDoc(index).get({ source: "server" }));
   }
   const chunkSnapshots = await Promise.all(chunkReads);
+  const chunksAreComplete = chunkSnapshots.every((chunkSnapshot, index) => {
+    const chunkData = chunkSnapshot.data() || {};
+    return chunkSnapshot.exists
+      && Number(chunkData.index) === index
+      && String(chunkData.revision || "") === expectedRevision
+      && typeof chunkData.text === "string";
+  });
   const stateJson = chunkSnapshots
     .map((chunkSnapshot) => chunkSnapshot.data()?.text || "")
     .join("");
+  const sizeMatches = !Number(data.stateSize) || stateJson.length === Number(data.stateSize);
+  if (!chunksAreComplete || !sizeMatches) {
+    if (attempt < 5) {
+      await new Promise((resolve) => window.setTimeout(resolve, 180 * (attempt + 1)));
+      const freshSnapshot = await cloudDocRef.get({ source: "server" });
+      return readCloudStateFromSnapshot(freshSnapshot, attempt + 1);
+    }
+    throw new Error("Blocos do Firebase pertencem a versoes diferentes. Tente novamente.");
+  }
+  let parsedState = null;
+  try {
+    parsedState = stateJson ? JSON.parse(stateJson) : null;
+  } catch (error) {
+    if (attempt < 5) {
+      await new Promise((resolve) => window.setTimeout(resolve, 180 * (attempt + 1)));
+      const freshSnapshot = await cloudDocRef.get({ source: "server" });
+      return readCloudStateFromSnapshot(freshSnapshot, attempt + 1);
+    }
+    throw error;
+  }
   cloudChunkCount = count;
-  cloudRevision = data.revision || "";
-  return { exists: true, state: stateJson ? JSON.parse(stateJson) : null };
+  cloudRevision = expectedRevision;
+  return { exists: true, state: parsedState };
 }
 
 async function readCloudState() {
-  return readCloudStateFromSnapshot(await cloudDocRef.get());
+  return readCloudStateFromSnapshot(await cloudDocRef.get({ source: "server" }));
 }
 
 async function writeCloudState(extra = {}) {
