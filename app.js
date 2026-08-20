@@ -3732,22 +3732,53 @@ function renderStockEntries() {
   `;
   }).join("");
 }
+const customerLegalNameWords = new Set(["ltda", "limitada", "me", "mei", "eireli", "sa", "epp"]);
+
+function customerSearchWords(value) {
+  const words = normalizeSearch(value).split(" ").filter(Boolean);
+  const meaningfulWords = words.filter((word) => !customerLegalNameWords.has(word));
+  return meaningfulWords.length ? meaningfulWords : words;
+}
+
+function compactCustomerSearch(value) {
+  return customerSearchWords(value).join("").replace(/[^a-z0-9]/g, "");
+}
+
 function customerMatchesSearch(customer, searchValue) {
   const search = normalizeSearch(searchValue);
   const searchDoc = cleanDocument(searchValue);
   if (!search && !searchDoc) return true;
 
-  const searchable = normalizeSearch([
+  const searchableValues = [
     customer.name,
     customer.fantasy,
+    customer.razaoSocial,
+    customer.nomeFantasia,
     customer.address,
     customer.phone,
     formatDocument(customer.document),
     customer.document
-  ].join(" "));
+  ];
+  const searchable = normalizeSearch(searchableValues.join(" "));
+  const compactSearch = compactCustomerSearch(searchValue);
+  const compactValues = searchableValues.map(compactCustomerSearch).filter(Boolean);
 
-  const wordMatches = search.split(" ").filter(Boolean).every((word) => searchable.includes(word));
-  return wordMatches || (searchDoc && customer.document.includes(searchDoc));
+  const wordMatches = customerSearchWords(searchValue).every((word) => searchable.includes(word));
+  const compactMatches = compactSearch.length >= 2 && compactValues.some((value) => value.includes(compactSearch));
+  return wordMatches || compactMatches || (searchDoc && String(customer.document || "").includes(searchDoc));
+}
+
+function customerSearchScore(customer, searchValue) {
+  const search = compactCustomerSearch(searchValue);
+  const name = compactCustomerSearch(customer.name || "");
+  const fantasy = compactCustomerSearch(customer.fantasy || customer.nomeFantasia || "");
+  const documentValue = cleanDocument(customer.document || "");
+  const searchDocument = cleanDocument(searchValue);
+  if (searchDocument && documentValue === searchDocument) return 1000;
+  if (name === search || fantasy === search) return 900;
+  if (name.startsWith(search) || fantasy.startsWith(search)) return 700;
+  if (name.includes(search) || fantasy.includes(search)) return 500;
+  return 100;
 }
 
 function customerSearchOptions(searchValue = "") {
@@ -3758,7 +3789,8 @@ function customerSearchOptions(searchValue = "") {
   const unique = new Map(options.map((customer) => [customer.document, customer]));
   return Array.from(unique.values())
     .filter((customer) => customerMatchesSearch(customer, searchValue))
-    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "pt-BR"));
+    .sort((a, b) => customerSearchScore(b, searchValue) - customerSearchScore(a, searchValue)
+      || String(a.name || "").localeCompare(String(b.name || ""), "pt-BR"));
 }
 
 function renderCustomerOptions(searchValue = "") {
@@ -6797,9 +6829,10 @@ function findCustomerByTerm(termValue) {
   const doc = cleanDocument(termValue);
   if (!term && !doc) return null;
 
-  const saved = state.customers.find((customer) => {
-    return customer.document === doc || customerMatchesSearch(customer, term);
-  });
+  const saved = state.customers
+    .filter((customer) => customer.document === doc || customerMatchesSearch(customer, term))
+    .sort((a, b) => customerSearchScore(b, termValue) - customerSearchScore(a, termValue)
+      || String(a.name || "").localeCompare(String(b.name || ""), "pt-BR"))[0];
   if (saved) return saved;
 
   const receitaEntry = Object.entries(receitaMock).find(([document, customer]) => {
