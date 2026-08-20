@@ -3744,27 +3744,32 @@ function compactCustomerSearch(value) {
   return customerSearchWords(value).join("").replace(/[^a-z0-9]/g, "");
 }
 
+function isCustomerDocumentSearch(value) {
+  const text = String(value || "").trim();
+  return Boolean(text && /\d/.test(text) && /^[\d\s./()-]+$/.test(text));
+}
+
 function customerMatchesSearch(customer, searchValue) {
   const search = normalizeSearch(searchValue);
-  const searchDoc = cleanDocument(searchValue);
+  const searchDoc = isCustomerDocumentSearch(searchValue) ? cleanDocument(searchValue) : "";
   if (!search && !searchDoc) return true;
 
-  const searchableValues = [
+  const nameValues = [
     customer.name,
     customer.fantasy,
     customer.razaoSocial,
-    customer.nomeFantasia,
-    customer.address,
-    customer.phone,
-    formatDocument(customer.document),
-    customer.document
+    customer.nomeFantasia
   ];
-  const searchable = normalizeSearch(searchableValues.join(" "));
+  const searchableNames = nameValues.map(normalizeSearch).filter(Boolean);
   const compactSearch = compactCustomerSearch(searchValue);
-  const compactValues = searchableValues.map(compactCustomerSearch).filter(Boolean);
+  const compactNames = nameValues.map(compactCustomerSearch).filter(Boolean);
+  const searchWords = customerSearchWords(searchValue);
 
-  const wordMatches = customerSearchWords(searchValue).every((word) => searchable.includes(word));
-  const compactMatches = compactSearch.length >= 2 && compactValues.some((value) => value.includes(compactSearch));
+  const wordMatches = searchableNames.some((name) => {
+    const nameWords = name.split(/\s+/).filter(Boolean);
+    return searchWords.every((word) => word.length === 1 ? nameWords.includes(word) : name.includes(word));
+  });
+  const compactMatches = compactSearch.length >= 2 && compactNames.some((value) => value.includes(compactSearch));
   return wordMatches || compactMatches || (searchDoc && String(customer.document || "").includes(searchDoc));
 }
 
@@ -3773,7 +3778,7 @@ function customerSearchScore(customer, searchValue) {
   const name = compactCustomerSearch(customer.name || "");
   const fantasy = compactCustomerSearch(customer.fantasy || customer.nomeFantasia || "");
   const documentValue = cleanDocument(customer.document || "");
-  const searchDocument = cleanDocument(searchValue);
+  const searchDocument = isCustomerDocumentSearch(searchValue) ? cleanDocument(searchValue) : "";
   if (searchDocument && documentValue === searchDocument) return 1000;
   if (name === search || fantasy === search) return 900;
   if (name.startsWith(search) || fantasy.startsWith(search)) return 700;
