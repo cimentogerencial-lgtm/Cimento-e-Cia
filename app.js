@@ -779,7 +779,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
     cloneStateSnapshot(remoteState),
     cloneStateSnapshot(localState)
   );
-  merged.stock = mergeObjectArray(remoteState?.stock, localState?.stock, (item) => item.id || normalizeSearch(item.product));
+  merged.stock = mergeLatestUpdatedObjectArray(remoteState?.stock, localState?.stock, (item) => item.id || normalizeSearch(item.product));
   merged.orders = mergeLatestUpdatedObjectArray(remoteState?.orders, localState?.orders, (item) => item.id);
   merged.deletedOrders = mergeObjectArray(remoteState?.deletedOrders, localState?.deletedOrders, (item) => item.orderId || item.id);
   const deletedOrderIds = new Set((merged.deletedOrders || []).map((item) => item.orderId || item.id).filter(Boolean));
@@ -2007,6 +2007,7 @@ function changeProductLocationQty(product, locationValue, quantity) {
   product.locations = product.locations || makeEmptyLocations();
   product.locations[location] = Number(product.locations[location] || 0) + quantity;
   syncProductTotal(product);
+  product.updatedAt = new Date().toISOString();
 }
 
 function renderNavigation() {
@@ -7862,7 +7863,7 @@ async function handleSale(event) {
   showToast(isDirectLoad ? "Distribuicao concluida. Pedido salvo." : "Pedido salvo. Estoque sera baixado somente na entrega.");
 }
 
-function updateOrderStage(orderId, nextStage) {
+async function updateOrderStage(orderId, nextStage) {
   const order = state.orders.find((item) => item.id === orderId);
   if (!order) return;
   if (["Em carregamento", "Saiu para entrega"].includes(nextStage)) {
@@ -7880,9 +7881,15 @@ function updateOrderStage(orderId, nextStage) {
 
   if (["Pedido", "Nao entregue"].includes(nextStage)) {
     order.deliveryStatus = nextStage;
+    order.updatedAt = new Date().toISOString();
     saveState();
-    saveStateToCloudNow();
+    const cloudSaved = await saveStateToCloudNow();
     renderAll();
+    if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+      showCloudError("Baixa logística mantida neste computador e aguardando confirmação do Firebase. Não feche esta página.");
+      showToast("Alteração logística ainda não confirmada pelo Firebase.");
+      return;
+    }
     showToast(stockReversed ? "Baixa estornada e quantidade devolvida ao estoque." : `Pedido marcado como ${nextStage}.`);
     return;
   }
@@ -7901,9 +7908,15 @@ function updateOrderStage(orderId, nextStage) {
     }
     if (order.directLoad) order.stockPosted = true;
     order.deliveryStatus = "Entregue";
+    order.updatedAt = new Date().toISOString();
     saveState();
-    saveStateToCloudNow();
+    const cloudSaved = await saveStateToCloudNow();
     renderAll();
+    if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+      showCloudError("Baixa logística mantida neste computador e aguardando confirmação do Firebase. Não feche esta página.");
+      showToast("Baixa ainda não confirmada pelo Firebase.");
+      return;
+    }
     showToast(order.directLoad ? "Pedido de carga direta marcado como entregue." : "Pedido entregue e estoque baixado.");
     return;
   }
