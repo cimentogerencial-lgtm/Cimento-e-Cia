@@ -780,7 +780,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
     cloneStateSnapshot(localState)
   );
   merged.stock = mergeObjectArray(remoteState?.stock, localState?.stock, (item) => item.id || normalizeSearch(item.product));
-  merged.orders = mergeObjectArray(remoteState?.orders, localState?.orders, (item) => item.id);
+  merged.orders = mergeLatestUpdatedObjectArray(remoteState?.orders, localState?.orders, (item) => item.id);
   merged.deletedOrders = mergeObjectArray(remoteState?.deletedOrders, localState?.deletedOrders, (item) => item.orderId || item.id);
   const deletedOrderIds = new Set((merged.deletedOrders || []).map((item) => item.orderId || item.id).filter(Boolean));
   merged.orders = (merged.orders || []).filter((order) => !deletedOrderIds.has(order.id));
@@ -7723,6 +7723,7 @@ async function handleSale(event) {
     order.pickupOrder = pickupOrder;
     order.observation = observation;
     order.stockLocation = editingDirectLoad ? order.stockLocation : stockLocation;
+    order.updatedAt = new Date().toISOString();
 
     if (order.directLoad && sourceEntry) {
       const allocation = entryAllocations(sourceEntry).find((item) => item.orderId === order.id);
@@ -7734,7 +7735,13 @@ async function handleSale(event) {
 
     resetSaleForm();
     saveState();
+    const cloudSaved = await saveStateToCloudNow();
     renderAll();
+    if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+      showCloudError("Alteração mantida neste computador e aguardando confirmação do Firebase. Não feche esta página.");
+      showToast("Alteração ainda não confirmada pelo Firebase.");
+      return;
+    }
     showToast("Pedido atualizado.");
     return;
   }
@@ -7774,6 +7781,7 @@ async function handleSale(event) {
     sourceInvoice: sourceEntry?.invoice || "",
     sourceFactoryOrder: sourceEntry?.factoryOrder || "",
     issuedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     sellerUser: loggedUser.user,
     sellerName: loggedUser.name,
     sellerRole: loggedUser.role
