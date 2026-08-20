@@ -40,6 +40,9 @@ let cloudSaveTimer = null;
 let cloudUnsubscribe = null;
 let applyingCloudState = false;
 let cloudPendingLocalChanges = false;
+let cloudLocalMutationVersion = 0;
+let cloudSavedMutationVersion = 0;
+let cloudSavePromise = null;
 let firebaseAuth = null;
 let firebaseReady = false;
 let firebaseLoginInProgress = false;
@@ -554,12 +557,13 @@ function makeId(value) {
 
 function saveState() {
   localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+  cloudLocalMutationVersion += 1;
+  cloudPendingLocalChanges = true;
   saveStateToCloud();
 }
 
 function saveStateToCloud() {
   if (!hasFirebaseUserSession() || !cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return;
-  cloudPendingLocalChanges = true;
   window.clearTimeout(cloudSaveTimer);
   cloudSaveTimer = window.setTimeout(saveStateToCloudNow, 1500);
 }
@@ -872,7 +876,7 @@ async function mergeLatestCloudStateBeforeSave() {
 }
 
 function applyCloudStateWithLocalBackup(cloudState, _localState) {
-  return applyMergedCloudState(cloudState, false);
+  return applyMergedCloudState(cloudState, true);
 }
 
 function persistCleanedCloudState() {
@@ -881,21 +885,43 @@ function persistCleanedCloudState() {
 }
 
 async function saveStateToCloudNow() {
-  if (!hasFirebaseUserSession() || !cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return;
-  try {
-    window.clearTimeout(cloudSaveTimer);
-    cloudSaveTimer = null;
-    cloudPendingLocalChanges = true;
-    await mergeLatestCloudStateBeforeSave();
-    await writeCloudState();
-    cloudPendingLocalChanges = false;
-  } catch (error) {
-    if (shouldIgnoreCloudErrorBeforeLogin(error)) return;
-    cloudPendingLocalChanges = true;
-    console.error("Erro ao salvar no Firebase:", error);
-    lastCloudError = error?.code || error?.message || "erro ao salvar";
-    showCloudError(`Firebase nao salvou: ${lastCloudError}`);
+  if (cloudSavePromise) {
+    const saved = await cloudSavePromise;
+    if (cloudSavedMutationVersion < cloudLocalMutationVersion) {
+      window.clearTimeout(cloudSaveTimer);
+      cloudSaveTimer = window.setTimeout(saveStateToCloudNow, 100);
+    }
+    return saved && cloudSavedMutationVersion >= cloudLocalMutationVersion;
   }
+  if (!hasFirebaseUserSession() || !cloudReady || !cloudDocRef || cloudLoading || applyingCloudState) return false;
+  const targetMutationVersion = cloudLocalMutationVersion;
+  window.clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = null;
+  cloudPendingLocalChanges = true;
+  cloudSavePromise = (async () => {
+    try {
+      await mergeLatestCloudStateBeforeSave();
+      await writeCloudState();
+      cloudSavedMutationVersion = Math.max(cloudSavedMutationVersion, targetMutationVersion);
+      cloudPendingLocalChanges = cloudSavedMutationVersion < cloudLocalMutationVersion;
+      clearCloudError();
+      return true;
+    } catch (error) {
+      if (shouldIgnoreCloudErrorBeforeLogin(error)) return false;
+      cloudPendingLocalChanges = true;
+      console.error("Erro ao salvar no Firebase:", error);
+      lastCloudError = error?.code || error?.message || "erro ao salvar";
+      showCloudError(`Firebase nao salvou: ${lastCloudError}`);
+      return false;
+    }
+  })();
+  const saved = await cloudSavePromise;
+  cloudSavePromise = null;
+  if (cloudSavedMutationVersion < cloudLocalMutationVersion && hasFirebaseUserSession() && cloudReady) {
+    window.clearTimeout(cloudSaveTimer);
+    cloudSaveTimer = window.setTimeout(saveStateToCloudNow, 100);
+  }
+  return saved;
 }
 
 async function initFirebaseSync() {
@@ -955,7 +981,7 @@ async function initFirebaseSync() {
       const liveCloudState = await readCloudStateFromSnapshot(liveSnapshot);
       if (!liveCloudState.state) return;
       applyingCloudState = true;
-      const cleanedLiveState = applyMergedCloudState(liveCloudState.state, cloudPendingLocalChanges);
+      const cleanedLiveState = applyMergedCloudState(liveCloudState.state, true);
       localStorage.setItem("cimentoGestorState", JSON.stringify(state));
       renderAll();
       applyingCloudState = false;
@@ -7425,7 +7451,7 @@ function startEditOrder(orderId) {
   qs("#sale-form").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function handleSale(event) {
+async function handleSale(event) {
   event.preventDefault();
   refreshToday();
   const loggedUser = getLoggedUser();
@@ -7809,9 +7835,12 @@ function handleSale(event) {
   }
   resetSaleForm();
   saveState();
-  saveStateToCloudNow();
+  const cloudSaved = await saveStateToCloudNow();
   renderCustomerOptions();
   renderAll();
+  if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+    showCloudError("Pedido mantido neste computador e aguardando confirmação do Firebase. Não feche esta página.");
+  }
   if (directEntryId && directRemaining > 0.009) {
     createDirectOrderFromEntry(directEntryId);
     showToast(`Parte salva. Ainda falta distribuir ${formatQty(directRemaining)} desta nota.`);
