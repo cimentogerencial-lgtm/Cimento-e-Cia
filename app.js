@@ -4350,34 +4350,69 @@ function salesReportData() {
   return { sellerFilter, months, monthTotals };
 }
 
+function sellerReportMonths() {
+  const startInput = qs("#seller-report-start-filter");
+  const endInput = qs("#seller-report-end-filter");
+  if (startInput && !startInput.value) {
+    const start = new Date(`${today.slice(0, 7)}-01T00:00:00`);
+    start.setMonth(start.getMonth() - 2);
+    startInput.value = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-01`;
+  }
+  if (endInput && !endInput.value) endInput.value = today;
+  const startText = startInput?.value || `${today.slice(0, 7)}-01`;
+  const endText = endInput?.value || today;
+  if (startText > endText) return [];
+  const cursor = new Date(`${startText.slice(0, 7)}-01T00:00:00`);
+  const end = new Date(`${endText.slice(0, 7)}-01T00:00:00`);
+  const months = [];
+  while (cursor <= end) {
+    months.push({
+      key: `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`,
+      label: cursor.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })
+    });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return months;
+}
+
 function sellerReportData() {
-  const sellerFilter = qs("#sales-report-seller-filter")?.value || "";
-  const months = reportMonths();
+  const months = sellerReportMonths();
+  const start = qs("#seller-report-start-filter")?.value || "";
+  const end = qs("#seller-report-end-filter")?.value || "";
   const sellerGroups = new Map();
   state.orders.forEach((order) => {
     const key = reportSellerKey(order.salesperson);
     if (!sellerGroups.has(key)) sellerGroups.set(key, reportSellerLabel(order.salesperson));
   });
-  return Array.from(sellerGroups, ([key, label]) => ({ key, label }))
-    .filter((seller) => !sellerFilter || seller.key === reportSellerKey(sellerFilter))
+  const rows = Array.from(sellerGroups, ([key, label]) => ({ key, label }))
     .map((seller) => {
-    const orders = state.orders.filter((order) => reportSellerKey(order.salesperson) === seller.key);
+    const orders = state.orders.filter((order) => reportSellerKey(order.salesperson) === seller.key)
+      .filter((order) => !start || String(order.date || "") >= start)
+      .filter((order) => !end || String(order.date || "") <= end);
     const monthStats = months.map((month) => {
       const monthOrders = orders.filter((order) => String(order.date || "").slice(0, 7) === month.key);
+      const value = monthOrders.reduce((sum, order) => sum + Number(order.value || 0), 0);
+      const bags = monthOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
       return {
-        value: monthOrders.reduce((sum, order) => sum + Number(order.value || 0), 0),
-        bags: monthOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0),
-        orders: monthOrders.length
+        month,
+        value,
+        bags,
+        orders: monthOrders.length,
+        average: bags ? value / bags : 0
       };
     });
+    const bags = orders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+    const total = orders.reduce((sum, order) => sum + Number(order.value || 0), 0);
     return {
       seller: seller.label,
       monthStats,
-      bags: orders.reduce((sum, order) => sum + Number(order.qty || 0), 0),
+      bags,
       orders: orders.length,
-      total: orders.reduce((sum, order) => sum + Number(order.value || 0), 0)
+      total,
+      average: bags ? total / bags : 0
     };
   }).sort((a, b) => b.total - a.total);
+  return { months, rows };
 }
 
 function freightValueForWeightedRow(row) {
@@ -4520,23 +4555,33 @@ function exportSalesCompositionExcel() {
 }
 
 function exportSellerReportExcel() {
-  const months = reportMonths();
-  const rows = sellerReportData();
-  downloadExcelWorkbook(`vendas-por-vendedor-${today}.xls`, [{
-    name: "Vendas por vendedor",
-    headers: ["Vendedor", ...months.flatMap((month) => [`${month.label} - Valor`, `${month.label} - Sacos`, `${month.label} - Pedidos`]), "Total sacos", "Total pedidos", "Total vendido"],
+  const { months, rows } = sellerReportData();
+  const monthSheets = months.map((month, monthIndex) => ({
+    name: month.label.slice(0, 31),
+    headers: ["Vendedor", "Valor vendido", "Sacos", "Pedidos", "Preço médio por saco"],
+    rows: rows.map((row) => {
+      const stats = row.monthStats[monthIndex];
+      return [
+        { value: row.seller },
+        { value: stats.value, className: "money" },
+        { value: stats.bags, className: "integer" },
+        { value: stats.orders, className: "integer" },
+        { value: stats.average, className: "money" }
+      ];
+    })
+  }));
+  const totalSheet = {
+    name: "Total do período",
+    headers: ["Vendedor", "Valor vendido", "Sacos", "Pedidos", "Preço médio por saco"],
     rows: rows.map((row) => [
       { value: row.seller },
-      ...row.monthStats.flatMap((month) => [
-        { value: month.value, className: "money" },
-        { value: month.bags, className: "integer" },
-        { value: month.orders, className: "integer" }
-      ]),
+      { value: row.total, className: "money" },
       { value: row.bags, className: "integer" },
       { value: row.orders, className: "integer" },
-      { value: row.total, className: "money" }
+      { value: row.average, className: "money" }
     ])
-  }]);
+  };
+  downloadExcelWorkbook(`vendas-por-vendedor-${today}.xls`, [...monthSheets, totalSheet]);
 }
 
 function exportWeightedReportExcel() {
@@ -4597,17 +4642,6 @@ function renderSalesReport() {
     <th>Indicador</th>
     ${months.map((month) => `<th class="right">${escapeHtml(month.label)}</th>`).join("")}
     <th class="right">Total</th>`;
-  const sellerMonths = reportMonths();
-  qs("#seller-report-head").innerHTML = `
-    <tr>
-      <th rowspan="2">Vendedor</th>
-      ${sellerMonths.map((month) => `<th class="center" colspan="3">${escapeHtml(month.label)}</th>`).join("")}
-      <th class="center" colspan="3">Total dos 3 meses</th>
-    </tr>
-    <tr>
-      ${sellerMonths.map(() => `<th class="right">Valor</th><th class="right">Sacos</th><th class="right">Pedidos</th>`).join("")}
-      <th class="right">Valor</th><th class="right">Sacos</th><th class="right">Pedidos</th>
-    </tr>`;
   const totalSales = monthTotals.reduce((sum, item) => sum + item.value, 0);
   const totalPickupSales = monthTotals.reduce((sum, item) => sum + item.pickupValue, 0);
   const totalCementBags = monthTotals.reduce((sum, item) => sum + item.bags, 0);
@@ -4663,50 +4697,62 @@ function renderSalesReport() {
 
   if (activeSalesCompositionIndicator) renderSalesComposition(activeSalesCompositionIndicator);
 
-  const sellerRows = sellers
-    .filter((seller) => !sellerFilter || seller.key === sellerFilter)
-    .map((seller) => {
-      const monthStats = sellerMonths.map((month) => {
-        const monthOrders = state.orders
-          .filter((order) => reportSellerKey(order.salesperson) === seller.key)
-          .filter((order) => String(order.date || "").slice(0, 7) === month.key);
-        return {
-          value: monthOrders.reduce((sum, order) => sum + Number(order.value || 0), 0),
-          bags: monthOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0),
-          orders: monthOrders.length
-        };
-      });
-      const sellerOrders = state.orders.filter((order) => reportSellerKey(order.salesperson) === seller.key);
-      const sellerBags = sellerOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
-      const sellerTotal = sellerOrders.reduce((sum, order) => sum + Number(order.value || 0), 0);
-      return {
-        seller: seller.label,
-        monthStats,
-        bags: sellerBags,
-        orders: sellerOrders.length,
-        total: sellerTotal
-      };
-    })
-    .sort((a, b) => b.total - a.total);
+  renderSellerReport();
+}
 
-  qs("#seller-sales-count").textContent = `${sellerRows.length} vendedores`;
-  qs("#seller-sales-table").innerHTML = sellerRows.length ? sellerRows.map((row) => `
-    <tr>
-      <td><strong>${row.seller}</strong></td>
-      ${row.monthStats.map((month) => `
-        <td class="right">${money.format(month.value)}</td>
-        <td class="right">${formatQty(month.bags)}</td>
-        <td class="right">${month.orders.toLocaleString("pt-BR")}</td>
-      `).join("")}
-      <td class="right"><strong>${money.format(row.total)}</strong></td>
-      <td class="right"><strong>${formatQty(row.bags)}</strong></td>
-      <td class="right"><strong>${row.orders.toLocaleString("pt-BR")}</strong></td>
-    </tr>
-  `).join("") : `
-    <tr>
-      <td colspan="13">Nenhuma venda encontrada para vendedores.</td>
-    </tr>
-  `;
+function sellerReportTable(title, rows, statsSelector, total = false) {
+  const tableRows = rows.map((row) => {
+    const stats = statsSelector(row);
+    return `
+      <tr>
+        <td><strong>${escapeHtml(row.seller)}</strong></td>
+        <td class="right"><strong>${money.format(stats.value)}</strong></td>
+        <td class="right">${formatQty(stats.bags)}</td>
+        <td class="right">${stats.orders.toLocaleString("pt-BR")}</td>
+        <td class="right"><strong>${money.format(stats.average)}</strong></td>
+      </tr>`;
+  }).join("");
+  return `
+    <section style="border:1px solid #d9e2da; border-radius:12px; overflow:hidden; margin:0 0 18px; background:#fff;">
+      <h3 style="margin:0; padding:14px 16px; background:${total ? "#dfece2" : "#edf4ee"};">${escapeHtml(title)}</h3>
+      <div class="table-scroll">
+        <table class="report-table">
+          <thead><tr><th>Vendedor</th><th class="right">Valor vendido</th><th class="right">Sacos</th><th class="right">Pedidos</th><th class="right">Preço médio por saco</th></tr></thead>
+          <tbody>${tableRows || `<tr><td colspan="5" class="center muted">Nenhuma venda encontrada no período.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </section>`;
+}
+
+function renderSellerReport() {
+  const container = qs("#seller-monthly-report");
+  if (!container) return;
+  const { months, rows } = sellerReportData();
+  qs("#seller-sales-count").textContent = `${rows.length} vendedores`;
+  const monthBlocks = months.map((month, index) => sellerReportTable(
+    month.label,
+    rows,
+    (row) => row.monthStats[index]
+  )).join("");
+  const totalBlock = sellerReportTable("Total do período", rows, (row) => ({
+    value: row.total,
+    bags: row.bags,
+    orders: row.orders,
+    average: row.average
+  }), true);
+  container.innerHTML = months.length ? `${monthBlocks}${totalBlock}` : `<p class="muted">A data inicial deve ser anterior à data final.</p>`;
+}
+
+function setSellerReportPeriod(period) {
+  const startInput = qs("#seller-report-start-filter");
+  const endInput = qs("#seller-report-end-filter");
+  if (!startInput || !endInput) return;
+  const start = new Date(`${today.slice(0, 7)}-01T00:00:00`);
+  if (period === "year") start.setMonth(0);
+  else start.setMonth(start.getMonth() - Math.max(0, Number(period || 3) - 1));
+  startInput.value = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-01`;
+  endInput.value = today;
+  renderSellerReport();
 }
 
 function showReportTab(tabName) {
@@ -9620,6 +9666,12 @@ function bindEvents() {
   });
   qs("#export-sales-report").addEventListener("click", exportSalesReportExcel);
   qs("#export-seller-report").addEventListener("click", exportSellerReportExcel);
+  ["#seller-report-start-filter", "#seller-report-end-filter"].forEach((selector) => {
+    qs(selector).addEventListener("change", renderSellerReport);
+  });
+  qsa("[data-seller-report-period]").forEach((button) => {
+    button.addEventListener("click", () => setSellerReportPeriod(button.dataset.sellerReportPeriod));
+  });
   qs("#export-weighted-report").addEventListener("click", exportWeightedReportExcel);
   qsa("[data-report-tab-button]").forEach((button) => {
     button.addEventListener("click", () => showReportTab(button.dataset.reportTabButton));

@@ -922,12 +922,18 @@
               <span class="tag" id="seller-sales-count">0 vendedores</span>
             </div>
           </div>
-          <div class="table-scroll">
-            <table class="report-table nowrap-table">
-              <thead id="seller-report-head"></thead>
-              <tbody id="seller-sales-table"></tbody>
-            </table>
+          <div class="orders-filter report-filter-grid" style="margin-bottom:16px;">
+            <label>Data inicial
+              <input id="seller-report-start-filter" type="date" />
+            </label>
+            <label>Data final
+              <input id="seller-report-end-filter" type="date" />
+            </label>
+            <button class="secondary-btn" type="button" data-seller-report-period="3">Últimos 3 meses</button>
+            <button class="secondary-btn" type="button" data-seller-report-period="6">Últimos 6 meses</button>
+            <button class="secondary-btn" type="button" data-seller-report-period="year">Ano atual</button>
           </div>
+          <div id="seller-monthly-report"></div>
         </section>
         <section class="panel config-tab-panel" data-report-tab-panel="media-ponderada" hidden>
           <div class="panel-head">
@@ -1483,6 +1489,6 @@
         console.error(event.error || event.message);
       });
     </script>
-    <script src="./app.js?v=20260819-lista-prazos-pedido"></script>
+    <script src="./app.js?v=20260820-vendedor-periodo-media"></script>
   </body>
 </html>
