@@ -26,11 +26,13 @@ let activeViewId = "dashboard";
 let customerImportMode = "merge";
 let customersTextNormalized = false;
 let activeFreightRateType = "entrega";
+let activeSalesCompositionIndicator = "";
 let cloudDb = null;
 let cloudDocRef = null;
 let cloudCollectionRef = null;
 let cloudDocumentId = "cimento-e-cia";
 let cloudChunkCount = 0;
+let cloudChunkPrefix = "";
 let cloudRevision = "";
 let cloudReady = false;
 let cloudLoading = false;
@@ -86,16 +88,30 @@ function defaultPermissions() {
 function serializeUsersConfig() {
   return users.map((item) => ({
     user: item.user,
+    email: item.email || "",
     name: item.name,
+    role: item.role || "Usuario",
     permissions: item.permissions || defaultPermissions()
   }));
 }
 
 function applyUsersConfig(savedUsers) {
   if (!Array.isArray(savedUsers)) return;
+  savedUsers.forEach((saved) => {
+    if (!saved?.user || users.some((item) => item.user === saved.user)) return;
+    users.push({
+      user: saved.user,
+      email: saved.email || "",
+      name: saved.name || saved.user,
+      role: saved.role || "Usuario",
+      permissions: { ...defaultPermissions(), ...(saved.permissions || {}) }
+    });
+  });
   users.forEach((user) => {
     const saved = savedUsers.find((item) => item.user === user.user);
     if (saved?.name) user.name = saved.name;
+    if (saved?.email) user.email = saved.email;
+    if (saved?.role) user.role = saved.role;
     user.permissions = { ...defaultPermissions(), ...(saved?.permissions || {}) };
   });
 }
@@ -287,12 +303,25 @@ state.reusableOrderIds = Array.isArray(state.reusableOrderIds) ? state.reusableO
 state.drivers = Array.isArray(state.drivers)
   ? cleanDriverOptions(state.drivers)
   : [];
-state.freightRates = Array.isArray(state.freightRates) ? state.freightRates.map((rate, index) => ({
-  id: rate.id || `frete-${Date.now()}-${index}`,
-  type: ["entrega", "retorno", "galpao"].includes(rate.type) ? rate.type : "entrega",
-  city: plainCustomerText(rate.city || ""),
-  value: Number(rate.value || 0)
-})).filter((rate) => rate.city) : [];
+function normalizeFreightRatesList(rates = []) {
+  const unique = new Map();
+  rates.forEach((rate, index) => {
+    const type = ["entrega", "retorno", "galpao"].includes(rate?.type) ? rate.type : "entrega";
+    const city = freightCityKey(rate?.city || "");
+    if (!city) return;
+    const key = `${type}|${normalizeSearch(city)}`;
+    const previous = unique.get(key);
+    unique.set(key, {
+      id: previous?.id || rate.id || `frete-${Date.now()}-${index}`,
+      type,
+      city,
+      value: Number(rate.value || 0)
+    });
+  });
+  return Array.from(unique.values());
+}
+
+state.freightRates = normalizeFreightRatesList(Array.isArray(state.freightRates) ? state.freightRates : []);
 state.freightTypes = state.freightTypes && typeof state.freightTypes === "object" ? state.freightTypes : {};
 applyInitialFreightRatesIfNeeded();
 state.dashboardLockOverrides = state.dashboardLockOverrides && typeof state.dashboardLockOverrides === "object"
@@ -567,8 +596,9 @@ function shouldIgnoreCloudErrorBeforeLogin(error) {
   return isPermissionError && window.CIMENTO_FIREBASE?.enabled && !hasFirebaseUserSession();
 }
 
-function cloudChunkDoc(index) {
-  return cloudCollectionRef.doc(`${cloudDocumentId}-chunk-${String(index).padStart(4, "0")}`);
+function cloudChunkDoc(index, prefix = cloudChunkPrefix) {
+  const base = prefix || `${cloudDocumentId}-chunk`;
+  return cloudCollectionRef.doc(`${base}-${String(index).padStart(4, "0")}`);
 }
 
 async function readCloudStateFromSnapshot(snapshot, attempt = 0) {
@@ -576,19 +606,22 @@ async function readCloudStateFromSnapshot(snapshot, attempt = 0) {
   const data = snapshot.data() || {};
   if (data.state) {
     cloudChunkCount = 0;
+    cloudChunkPrefix = "";
     cloudRevision = data.revision || "";
     return { exists: true, state: data.state };
   }
   if (data.stateFormat !== "chunks-v1" || !Number(data.chunkCount)) {
     cloudChunkCount = Number(data.chunkCount || 0);
+    cloudChunkPrefix = String(data.chunkPrefix || "");
     cloudRevision = data.revision || "";
     return { exists: true, state: null };
   }
   const count = Number(data.chunkCount || 0);
   const expectedRevision = String(data.revision || "");
+  const expectedChunkPrefix = String(data.chunkPrefix || "");
   const chunkReads = [];
   for (let index = 0; index < count; index += 1) {
-    chunkReads.push(cloudChunkDoc(index).get({ source: "server" }));
+    chunkReads.push(cloudChunkDoc(index, expectedChunkPrefix).get({ source: "server" }));
   }
   const chunkSnapshots = await Promise.all(chunkReads);
   const chunksAreComplete = chunkSnapshots.every((chunkSnapshot, index) => {
@@ -622,6 +655,7 @@ async function readCloudStateFromSnapshot(snapshot, attempt = 0) {
     throw error;
   }
   cloudChunkCount = count;
+  cloudChunkPrefix = expectedChunkPrefix;
   cloudRevision = expectedRevision;
   return { exists: true, state: parsedState };
 }
@@ -636,18 +670,21 @@ async function writeCloudState(extra = {}) {
   for (let index = 0; index < stateJson.length; index += cloudChunkSize) {
     chunks.push(stateJson.slice(index, index + cloudChunkSize));
   }
-  const revision = `${Date.now()}-${chunks.length}-${stateJson.length}`;
+  const revision = `${Date.now()}-${chunks.length}-${stateJson.length}-${Math.random().toString(36).slice(2, 10)}`;
+  const nextChunkPrefix = `${cloudDocumentId}-revision-${revision}-chunk`;
+  const previousChunkPrefix = cloudChunkPrefix;
+  const previousChunkCount = cloudChunkCount;
   const batch = cloudDb.batch();
   chunks.forEach((text, index) => {
-    batch.set(cloudChunkDoc(index), {
+    batch.set(cloudChunkDoc(index, nextChunkPrefix), {
       index,
       text,
       revision,
       updatedAt: new Date().toISOString()
     });
   });
-  for (let index = chunks.length; index < cloudChunkCount; index += 1) {
-    batch.delete(cloudChunkDoc(index));
+  for (let index = 0; index < previousChunkCount; index += 1) {
+    batch.delete(cloudChunkDoc(index, previousChunkPrefix));
   }
   const deleteOldInlineState = window.firebase?.firestore?.FieldValue?.delete;
   batch.set(cloudDocRef, {
@@ -655,12 +692,14 @@ async function writeCloudState(extra = {}) {
     updatedAt: new Date().toISOString(),
     stateFormat: "chunks-v1",
     chunkCount: chunks.length,
+    chunkPrefix: nextChunkPrefix,
     stateSize: stateJson.length,
     revision,
     ...(deleteOldInlineState ? { state: deleteOldInlineState() } : {})
   }, { merge: true });
   await batch.commit();
   cloudChunkCount = chunks.length;
+  cloudChunkPrefix = nextChunkPrefix;
   cloudRevision = revision;
 }
 
@@ -769,7 +808,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
     mergeObjectArray(remoteState?.paymentRules, localState?.paymentRules, (item) => paymentRuleKey(item) || item.id || `${item.type || ""}-${normalizeSearch(item.reference)}-${normalizeSearch(item.payment || item.method)}-${normalizeSearch(item.term)}`),
     merged.deletedPaymentRuleKeys
   );
-  merged.freightRates = mergeObjectArray(remoteState?.freightRates, localState?.freightRates, (item) => item.id || `${item.type || ""}-${normalizeSearch(item.city)}`);
+  merged.freightRates = normalizeFreightRatesList(mergeObjectArray(remoteState?.freightRates, localState?.freightRates, (item) => item.id || `${item.type || ""}-${normalizeSearch(item.city)}`));
   merged.financialAccounts = mergeLatestUpdatedObjectArray(remoteState?.financialAccounts, localState?.financialAccounts, (item) => item.id || normalizeSearch(item.name));
   merged.notes = mergeObjectArray(remoteState?.notes, localState?.notes, (item) => item.id || item.invoice || item.key);
   merged.stockEntries = mergeObjectArray(remoteState?.stockEntries, localState?.stockEntries, (item) => item.id || `${item.invoice || ""}-${normalizeSearch(item.product)}-${normalizeLocation(item.location)}-${item.quantity || ""}-${item.date || ""}`);
@@ -1181,13 +1220,62 @@ function initLogin() {
 }
 
 function renderUsersSettings() {
+  qs("#users-settings-count").textContent = `${users.length} acessos`;
   qs("#users-settings-table").innerHTML = users.map((user) => `
     <tr>
-      <td><input class="settings-input" data-config-name="${user.user}" value="${user.name}" /></td>
+      <td><strong>${escapeHtml(user.email || user.user)}</strong></td>
+      <td><input class="settings-input" data-config-name="${user.user}" value="${escapeAttr(user.name)}" /></td>
+      <td><input class="settings-input" data-config-role="${user.user}" value="${escapeAttr(user.role || "Usuario")}" /></td>
       <td class="right"><button class="stage-btn" type="button" data-save-user="${user.user}">Salvar</button></td>
     </tr>
   `).join("");
   renderUserPermissions();
+}
+
+async function createAccessUser(name, email, password, role) {
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  const userKey = cleanEmail.split("@")[0];
+  if (!cleanEmail.includes("@") || password.length < 6 || !userKey) {
+    showToast("Informe e-mail válido e senha com pelo menos 6 caracteres.");
+    return false;
+  }
+  if (users.some((item) => item.user === userKey || String(item.email || "").toLowerCase() === cleanEmail)) {
+    showToast("Este usuário já está cadastrado.");
+    return false;
+  }
+  if (!window.CIMENTO_FIREBASE?.enabled || !window.firebase) {
+    showToast("Firebase não está disponível para cadastrar o usuário.");
+    return false;
+  }
+  let secondaryApp = null;
+  try {
+    secondaryApp = window.firebase.initializeApp(window.CIMENTO_FIREBASE.config, `cadastro-${Date.now()}`);
+    const secondaryAuth = secondaryApp.auth();
+    await secondaryAuth.createUserWithEmailAndPassword(cleanEmail, password);
+    await secondaryAuth.signOut();
+    users.push({
+      user: userKey,
+      email: cleanEmail,
+      name: String(name || "").trim() || userKey,
+      role: String(role || "").trim() || "Usuario",
+      permissions: defaultPermissions()
+    });
+    saveUsersConfig();
+    renderUsersSettings();
+    showToast("Usuário cadastrado com sucesso.");
+    return true;
+  } catch (error) {
+    const messages = {
+      "auth/email-already-in-use": "Este e-mail já possui acesso no Firebase.",
+      "auth/invalid-email": "O e-mail informado é inválido.",
+      "auth/weak-password": "A senha deve possuir pelo menos 6 caracteres.",
+      "auth/operation-not-allowed": "O cadastro por e-mail e senha não está habilitado no Firebase."
+    };
+    showToast(messages[error?.code] || `Não foi possível cadastrar: ${error?.message || "erro desconhecido"}`);
+    return false;
+  } finally {
+    if (secondaryApp) await secondaryApp.delete().catch(() => {});
+  }
 }
 
 function renderUserPermissions() {
@@ -1267,6 +1355,15 @@ function renderCustomerPaymentTermOptions(selected = "") {
 }
 
 function renderPaymentTerms() {
+  const saleTermSelect = qs("#sale-payment-term");
+  if (saleTermSelect) {
+    const current = saleTermSelect.value || "";
+    saleTermSelect.innerHTML = [
+      `<option value="">Selecione o prazo</option>`,
+      ...state.paymentTerms.map((term) => `<option value="${escapeAttr(term)}">${escapeHtml(term)}</option>`)
+    ].join("");
+    saleTermSelect.value = state.paymentTerms.includes(current) ? current : "";
+  }
   const rows = state.paymentTerms.length ? state.paymentTerms.map((term) => `
     <tr>
       <td><input class="settings-input" data-payment-term="${escapeAttr(term)}" value="${escapeAttr(term)}" /></td>
@@ -4111,7 +4208,13 @@ function reportMonths() {
 function excelCell(value, className = "") {
   let displayValue = value ?? "";
   let finalClassName = className;
-  if (className === "money") {
+  if (className === "excel-money") {
+    const numericValue = Number(value || 0);
+    return `<td class="text-right" x:num="${numericValue}" style="mso-number-format:'R$ #,##0.00';">${numericValue}</td>`;
+  } else if (className === "excel-number") {
+    const numericValue = Number(value || 0);
+    return `<td class="text-right" x:num="${numericValue}" style="mso-number-format:'0.00';">${numericValue}</td>`;
+  } else if (className === "money") {
     displayValue = money.format(Number(value || 0));
     finalClassName = "text-right";
   } else if (className === "number") {
@@ -4174,21 +4277,75 @@ function downloadExcelWorkbook(filename, sheets) {
   URL.revokeObjectURL(url);
 }
 
+function salesReportFilters() {
+  return {
+    start: qs("#sales-report-start-filter")?.value || "",
+    end: qs("#sales-report-end-filter")?.value || "",
+    customer: normalizeSearch(qs("#sales-report-customer-filter")?.value || ""),
+    product: normalizeSearch(qs("#sales-report-product-filter")?.value || ""),
+    seller: qs("#sales-report-seller-filter")?.value || ""
+  };
+}
+
+function salesReportMonths() {
+  const filters = salesReportFilters();
+  if (!filters.start && !filters.end) return reportMonths();
+  const endText = filters.end || today;
+  const end = new Date(`${endText.slice(0, 7)}-01T00:00:00`);
+  const start = filters.start
+    ? new Date(`${filters.start.slice(0, 7)}-01T00:00:00`)
+    : new Date(end);
+  if (!filters.start) start.setMonth(start.getMonth() - 2);
+  if (start > end) return [];
+  const months = [];
+  const cursor = new Date(start);
+  while (cursor <= end) {
+    months.push({
+      key: `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`,
+      label: cursor.toLocaleDateString("pt-BR", { month: "short", year: "2-digit" }).replace(".", "")
+    });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return months;
+}
+
+function salesReportFilteredOrders() {
+  const filters = salesReportFilters();
+  return state.orders.filter((order) => {
+    const date = String(order.date || "");
+    if (filters.start && date < filters.start) return false;
+    if (filters.end && date > filters.end) return false;
+    if (filters.seller && reportSellerKey(order.salesperson) !== filters.seller) return false;
+    const customerText = normalizeSearch(`${order.customer || ""} ${order.customerDoc || ""}`);
+    if (filters.customer && !customerText.includes(filters.customer)) return false;
+    const productText = normalizeSearch(orderItems(order).map((item) => item.product || "").join(" "));
+    if (filters.product && !productText.includes(filters.product)) return false;
+    return true;
+  });
+}
+
 function salesReportData() {
   const sellerFilter = qs("#sales-report-seller-filter")?.value || "";
-  const months = reportMonths();
+  const months = salesReportMonths();
+  const filteredOrders = salesReportFilteredOrders();
   const monthTotals = months.map((month) => {
-    const orders = state.orders.filter((order) => {
-      const sameMonth = String(order.date || "").slice(0, 7) === month.key;
-      const sameSeller = !sellerFilter || reportSellerKey(order.salesperson) === sellerFilter;
-      return sameMonth && sameSeller;
-    });
-    const value = orders.reduce((sum, order) => sum + Number(order.value || 0), 0);
-    const pickupValue = orders
-      .filter((order) => order.pickupOrder === true)
-      .reduce((sum, order) => sum + Number(order.value || 0), 0);
-    const bags = orders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
-    return { month, orders: orders.length, value, pickupValue, bags, average: bags ? value / bags : 0 };
+    const orders = filteredOrders.filter((order) => String(order.date || "").slice(0, 7) === month.key);
+    const salesOrders = orders.filter((order) => order.pickupOrder !== true);
+    const pickupOrders = orders.filter((order) => order.pickupOrder === true);
+    const value = salesOrders.reduce((sum, order) => sum + Number(order.value || 0), 0);
+    const pickupValue = pickupOrders.reduce((sum, order) => sum + Number(order.value || 0), 0);
+    const bags = salesOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+    const pickupBags = pickupOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+    return {
+      month,
+      orders: salesOrders.length,
+      pickupOrders: pickupOrders.length,
+      value,
+      pickupValue,
+      bags,
+      pickupBags,
+      average: bags ? value / bags : 0
+    };
   });
   return { sellerFilter, months, monthTotals };
 }
@@ -4205,12 +4362,17 @@ function sellerReportData() {
     .filter((seller) => !sellerFilter || seller.key === reportSellerKey(sellerFilter))
     .map((seller) => {
     const orders = state.orders.filter((order) => reportSellerKey(order.salesperson) === seller.key);
-    const monthValues = months.map((month) => orders
-      .filter((order) => String(order.date || "").slice(0, 7) === month.key)
-      .reduce((sum, order) => sum + Number(order.value || 0), 0));
+    const monthStats = months.map((month) => {
+      const monthOrders = orders.filter((order) => String(order.date || "").slice(0, 7) === month.key);
+      return {
+        value: monthOrders.reduce((sum, order) => sum + Number(order.value || 0), 0),
+        bags: monthOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0),
+        orders: monthOrders.length
+      };
+    });
     return {
       seller: seller.label,
-      monthValues,
+      monthStats,
       bags: orders.reduce((sum, order) => sum + Number(order.qty || 0), 0),
       orders: orders.length,
       total: orders.reduce((sum, order) => sum + Number(order.value || 0), 0)
@@ -4243,17 +4405,117 @@ function exportSalesReportExcel() {
   const totalValue = monthTotals.reduce((sum, item) => sum + item.value, 0);
   const totalPickupValue = monthTotals.reduce((sum, item) => sum + item.pickupValue, 0);
   const totalBags = monthTotals.reduce((sum, item) => sum + item.bags, 0);
+  const totalPickupBags = monthTotals.reduce((sum, item) => sum + item.pickupBags, 0);
   const totalOrders = monthTotals.reduce((sum, item) => sum + item.orders, 0);
+  const totalPickupOrders = monthTotals.reduce((sum, item) => sum + item.pickupOrders, 0);
   downloadExcelWorkbook(`relatorio-vendas-${today}.xls`, [{
     name: sellerFilter ? `Relatorio de vendas - ${sellerFilter}` : "Relatorio de vendas",
     headers: ["Indicador", ...months.map((month) => month.label), "Total"],
     rows: [
       [{ value: "Saldo de vendas" }, ...monthTotals.map((item) => ({ value: item.value, className: "money" })), { value: totalValue, className: "money" }],
-      [{ value: "Retira" }, ...monthTotals.map((item) => ({ value: item.pickupValue, className: "money" })), { value: totalPickupValue, className: "money" }],
-      [{ value: "Sacos de cimento vendidos" }, ...monthTotals.map((item) => ({ value: item.bags, className: "integer" })), { value: totalBags, className: "integer" }],
+      [{ value: "Quantidade de sacos das vendas" }, ...monthTotals.map((item) => ({ value: item.bags, className: "number" })), { value: totalBags, className: "number" }],
       [{ value: "Preco medio por saco" }, ...monthTotals.map((item) => ({ value: item.average, className: "money" })), { value: totalBags ? totalValue / totalBags : 0, className: "money" }],
-      [{ value: "Quantidade de pedidos" }, ...monthTotals.map((item) => ({ value: item.orders, className: "integer" })), { value: totalOrders, className: "integer" }]
+      [{ value: "Quantidade de pedidos de venda" }, ...monthTotals.map((item) => ({ value: item.orders, className: "integer" })), { value: totalOrders, className: "integer" }],
+      [{ value: "Valor da Retira" }, ...monthTotals.map((item) => ({ value: item.pickupValue, className: "money" })), { value: totalPickupValue, className: "money" }],
+      [{ value: "Quantidade de sacos da Retira" }, ...monthTotals.map((item) => ({ value: item.pickupBags, className: "number" })), { value: totalPickupBags, className: "number" }],
+      [{ value: "Quantidade de pedidos Retira" }, ...monthTotals.map((item) => ({ value: item.pickupOrders, className: "integer" })), { value: totalPickupOrders, className: "integer" }]
     ]
+  }]);
+}
+
+const salesCompositionIndicators = {
+  salesValue: { label: "Saldo de vendas", pickup: false },
+  salesBags: { label: "Quantidade de sacos das vendas", pickup: false },
+  salesAverage: { label: "Preço médio por saco das vendas", pickup: false },
+  pickupValue: { label: "Valor da Retira", pickup: true },
+  pickupBags: { label: "Quantidade de sacos da Retira", pickup: true },
+  salesOrders: { label: "Quantidade de pedidos de venda", pickup: false },
+  pickupOrders: { label: "Quantidade de pedidos Retira", pickup: true }
+};
+
+function salesCompositionRows(indicator = activeSalesCompositionIndicator) {
+  const config = salesCompositionIndicators[indicator];
+  if (!config) return [];
+  const monthKeys = new Set(salesReportMonths().map((month) => month.key));
+  return salesReportFilteredOrders()
+    .filter((order) => monthKeys.has(String(order.date || "").slice(0, 7)))
+    .filter((order) => (order.pickupOrder === true) === config.pickup)
+    .flatMap((order) => orderItems(order).map((item) => {
+      const qty = Number(item.qty || 0);
+      const value = Number(item.value || qty * Number(item.price || 0) || 0);
+      return {
+        date: order.date || "",
+        orderId: order.id || "",
+        customer: order.customer || "-",
+        product: item.product || order.product || "-",
+        qty,
+        value
+      };
+    }))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.orderId).localeCompare(String(b.orderId)));
+}
+
+function filteredSalesCompositionRows(indicator = activeSalesCompositionIndicator) {
+  const start = qs("#sales-composition-start-filter")?.value || "";
+  const end = qs("#sales-composition-end-filter")?.value || "";
+  const order = normalizeSearch(qs("#sales-composition-order-filter")?.value || "");
+  const customer = normalizeSearch(qs("#sales-composition-customer-filter")?.value || "");
+  const product = normalizeSearch(qs("#sales-composition-product-filter")?.value || "");
+  return salesCompositionRows(indicator).filter((row) => {
+    if (start && row.date < start) return false;
+    if (end && row.date > end) return false;
+    if (order && !normalizeSearch(row.orderId).includes(order)) return false;
+    if (customer && !normalizeSearch(row.customer).includes(customer)) return false;
+    if (product && !normalizeSearch(row.product).includes(product)) return false;
+    return true;
+  });
+}
+
+function renderSalesComposition(indicator = activeSalesCompositionIndicator) {
+  const panel = qs("#sales-composition-panel");
+  const config = salesCompositionIndicators[indicator];
+  if (!panel || !config) {
+    if (panel) panel.hidden = true;
+    return;
+  }
+  activeSalesCompositionIndicator = indicator;
+  const rows = filteredSalesCompositionRows(indicator);
+  const totalQty = rows.reduce((sum, row) => sum + row.qty, 0);
+  const totalValue = rows.reduce((sum, row) => sum + row.value, 0);
+  panel.hidden = false;
+  qs("#sales-composition-title").textContent = `Composição: ${config.label}`;
+  qs("#sales-composition-subtitle").textContent = `Período e filtros selecionados no relatório de vendas.`;
+  qs("#sales-composition-count").textContent = `${rows.length} registros`;
+  qs("#sales-composition-qty-total").textContent = formatQty(totalQty);
+  qs("#sales-composition-value-total").textContent = money.format(totalValue);
+  qs("#sales-composition-table").innerHTML = rows.length ? rows.map((row) => `
+    <tr>
+      <td>${formatDateBR(row.date)}</td>
+      <td><strong>${escapeHtml(row.orderId)}</strong></td>
+      <td>${escapeHtml(row.customer)}</td>
+      <td>${escapeHtml(row.product)}</td>
+      <td class="right">${formatQty(row.qty)}</td>
+      <td class="right">${money.format(row.value)}</td>
+    </tr>
+  `).join("") : `<tr><td colspan="6" class="center muted">Nenhum lançamento encontrado.</td></tr>`;
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function exportSalesCompositionExcel() {
+  const config = salesCompositionIndicators[activeSalesCompositionIndicator];
+  if (!config) return;
+  const rows = filteredSalesCompositionRows(activeSalesCompositionIndicator);
+  downloadExcelWorkbook(`composicao-${normalizeSearch(config.label).replace(/\s+/g, "-")}-${today}.xls`, [{
+    name: config.label,
+    headers: ["Data", "Pedido", "Cliente", "Produto", "Quantidade", "Valor"],
+    rows: rows.map((row) => [
+      { value: formatDateBR(row.date), className: "date" },
+      { value: row.orderId },
+      { value: row.customer },
+      { value: row.product },
+      { value: row.qty, className: "excel-number" },
+      { value: row.value, className: "excel-money" }
+    ])
   }]);
 }
 
@@ -4262,10 +4524,14 @@ function exportSellerReportExcel() {
   const rows = sellerReportData();
   downloadExcelWorkbook(`vendas-por-vendedor-${today}.xls`, [{
     name: "Vendas por vendedor",
-    headers: ["Vendedor", ...months.map((month) => month.label), "Sacos", "Pedidos", "Total"],
+    headers: ["Vendedor", ...months.flatMap((month) => [`${month.label} - Valor`, `${month.label} - Sacos`, `${month.label} - Pedidos`]), "Total sacos", "Total pedidos", "Total vendido"],
     rows: rows.map((row) => [
       { value: row.seller },
-      ...row.monthValues.map((value) => ({ value, className: "money" })),
+      ...row.monthStats.flatMap((month) => [
+        { value: month.value, className: "money" },
+        { value: month.bags, className: "integer" },
+        { value: month.orders, className: "integer" }
+      ]),
       { value: row.bags, className: "integer" },
       { value: row.orders, className: "integer" },
       { value: row.total, className: "money" }
@@ -4326,80 +4592,96 @@ function renderSalesReport() {
   });
   const sellers = Array.from(sellerGroups, ([key, label]) => ({ key, label }))
     .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
-  qs("#sales-report-seller-filter").innerHTML = [
-    `<option value="">Todos</option>`,
-    ...sellers.map((seller) => `<option value="${escapeAttr(seller.key)}" ${seller.key === sellerFilter ? "selected" : ""}>${seller.label}</option>`)
-  ].join("");
-
-  const months = reportMonths();
-  months.forEach((month, index) => {
-    qs(`#report-month-${index + 1}`).textContent = month.label;
-    qs(`#seller-report-month-${index + 1}`).textContent = month.label;
-  });
-
-  const monthTotals = months.map((month) => {
-    const orders = state.orders.filter((order) => {
-      const sameMonth = String(order.date || "").slice(0, 7) === month.key;
-      const sameSeller = !sellerFilter || reportSellerKey(order.salesperson) === sellerFilter;
-      return sameMonth && sameSeller;
-    });
-    return {
-      orders: orders.length,
-      value: orders.reduce((sum, order) => sum + Number(order.value || 0), 0),
-      pickupValue: orders
-        .filter((order) => order.pickupOrder === true)
-        .reduce((sum, order) => sum + Number(order.value || 0), 0),
-      cementBags: orders.reduce((sum, order) => sum + Number(order.qty || 0), 0)
-    };
-  });
+  const { months, monthTotals } = salesReportData();
+  qs("#sales-report-head").innerHTML = `
+    <th>Indicador</th>
+    ${months.map((month) => `<th class="right">${escapeHtml(month.label)}</th>`).join("")}
+    <th class="right">Total</th>`;
+  const sellerMonths = reportMonths();
+  qs("#seller-report-head").innerHTML = `
+    <tr>
+      <th rowspan="2">Vendedor</th>
+      ${sellerMonths.map((month) => `<th class="center" colspan="3">${escapeHtml(month.label)}</th>`).join("")}
+      <th class="center" colspan="3">Total dos 3 meses</th>
+    </tr>
+    <tr>
+      ${sellerMonths.map(() => `<th class="right">Valor</th><th class="right">Sacos</th><th class="right">Pedidos</th>`).join("")}
+      <th class="right">Valor</th><th class="right">Sacos</th><th class="right">Pedidos</th>
+    </tr>`;
   const totalSales = monthTotals.reduce((sum, item) => sum + item.value, 0);
   const totalPickupSales = monthTotals.reduce((sum, item) => sum + item.pickupValue, 0);
-  const totalCementBags = monthTotals.reduce((sum, item) => sum + item.cementBags, 0);
+  const totalCementBags = monthTotals.reduce((sum, item) => sum + item.bags, 0);
+  const totalPickupBags = monthTotals.reduce((sum, item) => sum + item.pickupBags, 0);
   const totalOrders = monthTotals.reduce((sum, item) => sum + item.orders, 0);
+  const totalPickupOrders = monthTotals.reduce((sum, item) => sum + item.pickupOrders, 0);
+
+  const indicatorLabel = (label, indicator) => `
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+      <strong>${label}</strong>
+      <button class="print-btn" type="button" data-sales-composition="${indicator}">Visualizar</button>
+    </div>`;
 
   qs("#sales-report-table").innerHTML = `
+    <tr><td colspan="${months.length + 2}" style="background:#edf4ee;"><strong>INDICADORES DE VENDAS</strong></td></tr>
     <tr>
-      <td><strong>Saldo de vendas</strong></td>
+      <td>${indicatorLabel("Saldo de vendas", "salesValue")}</td>
       ${monthTotals.map((item) => `<td class="right"><strong>${money.format(item.value)}</strong></td>`).join("")}
       <td class="right"><strong>${money.format(totalSales)}</strong></td>
     </tr>
     <tr>
-      <td><strong>Retira</strong></td>
+      <td>${indicatorLabel("Quantidade de sacos das vendas", "salesBags")}</td>
+      ${monthTotals.map((item) => `<td class="right"><strong>${formatQty(item.bags)}</strong></td>`).join("")}
+      <td class="right"><strong>${formatQty(totalCementBags)}</strong></td>
+    </tr>
+    <tr>
+      <td>${indicatorLabel("Preço médio por saco das vendas", "salesAverage")}</td>
+      ${monthTotals.map((item) => `<td class="right"><strong>${money.format(item.average)}</strong></td>`).join("")}
+      <td class="right"><strong>${money.format(totalCementBags ? totalSales / totalCementBags : 0)}</strong></td>
+    </tr>
+    <tr>
+      <td>${indicatorLabel("Quantidade de pedidos de venda", "salesOrders")}</td>
+      ${monthTotals.map((item) => `<td class="right"><strong>${item.orders.toLocaleString("pt-BR")}</strong></td>`).join("")}
+      <td class="right"><strong>${totalOrders.toLocaleString("pt-BR")}</strong></td>
+    </tr>
+    <tr><td colspan="${months.length + 2}" style="background:#f7f1e8;"><strong>INDICADORES DE RETIRA</strong></td></tr>
+    <tr>
+      <td>${indicatorLabel("Valor da Retira", "pickupValue")}</td>
       ${monthTotals.map((item) => `<td class="right"><strong>${money.format(item.pickupValue)}</strong></td>`).join("")}
       <td class="right"><strong>${money.format(totalPickupSales)}</strong></td>
     </tr>
     <tr>
-      <td><strong>Sacos de cimento vendidos</strong></td>
-      ${monthTotals.map((item) => `<td class="right"><strong>${formatQty(item.cementBags)}</strong></td>`).join("")}
-      <td class="right"><strong>${formatQty(totalCementBags)}</strong></td>
+      <td>${indicatorLabel("Quantidade de sacos da Retira", "pickupBags")}</td>
+      ${monthTotals.map((item) => `<td class="right"><strong>${formatQty(item.pickupBags)}</strong></td>`).join("")}
+      <td class="right"><strong>${formatQty(totalPickupBags)}</strong></td>
     </tr>
     <tr>
-      <td><strong>Preco medio por saco</strong></td>
-      ${monthTotals.map((item) => `<td class="right"><strong>${money.format(item.cementBags ? item.value / item.cementBags : 0)}</strong></td>`).join("")}
-      <td class="right"><strong>${money.format(totalCementBags ? totalSales / totalCementBags : 0)}</strong></td>
-    </tr>
-    <tr>
-      <td><strong>Quantidade de pedidos</strong></td>
-      ${monthTotals.map((item) => `<td class="right"><strong>${item.orders.toLocaleString("pt-BR")}</strong></td>`).join("")}
-      <td class="right"><strong>${totalOrders.toLocaleString("pt-BR")}</strong></td>
+      <td>${indicatorLabel("Quantidade de pedidos Retira", "pickupOrders")}</td>
+      ${monthTotals.map((item) => `<td class="right"><strong>${item.pickupOrders.toLocaleString("pt-BR")}</strong></td>`).join("")}
+      <td class="right"><strong>${totalPickupOrders.toLocaleString("pt-BR")}</strong></td>
     </tr>
   `;
+
+  if (activeSalesCompositionIndicator) renderSalesComposition(activeSalesCompositionIndicator);
 
   const sellerRows = sellers
     .filter((seller) => !sellerFilter || seller.key === sellerFilter)
     .map((seller) => {
-      const monthValues = months.map((month) => {
-        return state.orders
+      const monthStats = sellerMonths.map((month) => {
+        const monthOrders = state.orders
           .filter((order) => reportSellerKey(order.salesperson) === seller.key)
-          .filter((order) => String(order.date || "").slice(0, 7) === month.key)
-          .reduce((sum, order) => sum + Number(order.value || 0), 0);
+          .filter((order) => String(order.date || "").slice(0, 7) === month.key);
+        return {
+          value: monthOrders.reduce((sum, order) => sum + Number(order.value || 0), 0),
+          bags: monthOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0),
+          orders: monthOrders.length
+        };
       });
       const sellerOrders = state.orders.filter((order) => reportSellerKey(order.salesperson) === seller.key);
       const sellerBags = sellerOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
       const sellerTotal = sellerOrders.reduce((sum, order) => sum + Number(order.value || 0), 0);
       return {
         seller: seller.label,
-        monthValues,
+        monthStats,
         bags: sellerBags,
         orders: sellerOrders.length,
         total: sellerTotal
@@ -4411,14 +4693,18 @@ function renderSalesReport() {
   qs("#seller-sales-table").innerHTML = sellerRows.length ? sellerRows.map((row) => `
     <tr>
       <td><strong>${row.seller}</strong></td>
-      ${row.monthValues.map((value) => `<td class="right">${money.format(value)}</td>`).join("")}
-      <td class="right">${formatQty(row.bags)}</td>
-      <td class="right">${row.orders.toLocaleString("pt-BR")}</td>
+      ${row.monthStats.map((month) => `
+        <td class="right">${money.format(month.value)}</td>
+        <td class="right">${formatQty(month.bags)}</td>
+        <td class="right">${month.orders.toLocaleString("pt-BR")}</td>
+      `).join("")}
       <td class="right"><strong>${money.format(row.total)}</strong></td>
+      <td class="right"><strong>${formatQty(row.bags)}</strong></td>
+      <td class="right"><strong>${row.orders.toLocaleString("pt-BR")}</strong></td>
     </tr>
   `).join("") : `
     <tr>
-      <td colspan="7">Nenhuma venda encontrada para vendedores.</td>
+      <td colspan="13">Nenhuma venda encontrada para vendedores.</td>
     </tr>
   `;
 }
@@ -4866,13 +5152,13 @@ function renderFreights() {
 }
 
 function freightRateCities() {
-  return Array.from(new Set([
+  return Array.from(new Map([
     ...state.sellerCities.map((rule) => freightCityKey(rule.city)),
     ...state.customers.map((customer) => freightCityKey(customerCityText(customer))),
     ...freightTripRows().map((row) => freightCityKey(row.city)),
     ...state.freightRates.map((rate) => freightCityKey(rate.city)),
     ...stockLocations
-  ].filter((city) => city && city !== "-"))).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  ].filter((city) => city && city !== "-").map((city) => [normalizeSearch(city), city])).values()).sort((a, b) => a.localeCompare(b, "pt-BR"));
 }
 
 function renderFreightSettings() {
@@ -4917,6 +5203,7 @@ function saveFreightRate(rateId) {
   if (!rate) return;
   rate.city = freightCityKey(qs(`[data-freight-rate-city="${CSS.escape(rateId)}"]`)?.value || rate.city);
   rate.value = parseMoneyInput(qs(`[data-freight-rate-value="${CSS.escape(rateId)}"]`)?.value || rate.value);
+  state.freightRates = normalizeFreightRatesList(state.freightRates);
   saveState();
   renderAll();
   showConfigTab("fretes-config");
@@ -9308,11 +9595,28 @@ function bindEvents() {
     financeCurrentPage = 1;
     renderReceivables();
   });
-  qs("#sales-report-seller-filter").addEventListener("change", renderSalesReport);
-  qs("#clear-sales-report-filter").addEventListener("click", () => {
-    qs("#sales-report-seller-filter").value = "";
-    renderSalesReport();
-    renderWeightedAverageReport();
+  qs("#sales-report-table").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-sales-composition]");
+    if (button) renderSalesComposition(button.dataset.salesComposition);
+  });
+  ["#sales-composition-start-filter", "#sales-composition-end-filter", "#sales-composition-order-filter", "#sales-composition-customer-filter", "#sales-composition-product-filter"].forEach((selector) => {
+    qs(selector).addEventListener("input", () => {
+      if (activeSalesCompositionIndicator) renderSalesComposition(activeSalesCompositionIndicator);
+    });
+    qs(selector).addEventListener("change", () => {
+      if (activeSalesCompositionIndicator) renderSalesComposition(activeSalesCompositionIndicator);
+    });
+  });
+  qs("#clear-sales-composition-filter").addEventListener("click", () => {
+    ["#sales-composition-start-filter", "#sales-composition-end-filter", "#sales-composition-order-filter", "#sales-composition-customer-filter", "#sales-composition-product-filter"].forEach((selector) => {
+      qs(selector).value = "";
+    });
+    if (activeSalesCompositionIndicator) renderSalesComposition(activeSalesCompositionIndicator);
+  });
+  qs("#export-sales-composition").addEventListener("click", exportSalesCompositionExcel);
+  qs("#close-sales-composition").addEventListener("click", () => {
+    activeSalesCompositionIndicator = "";
+    qs("#sales-composition-panel").hidden = true;
   });
   qs("#export-sales-report").addEventListener("click", exportSalesReportExcel);
   qs("#export-seller-report").addEventListener("click", exportSellerReportExcel);
@@ -9444,13 +9748,28 @@ function bindEvents() {
   qsa("[data-client-tab-button]").forEach((button) => {
     button.addEventListener("click", () => showClientTab(button.dataset.clientTabButton));
   });
+  qs("#new-user-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector('button[type="submit"]');
+    button.disabled = true;
+    const created = await createAccessUser(
+      qs("#new-user-name").value,
+      qs("#new-user-email").value,
+      qs("#new-user-password").value,
+      qs("#new-user-role").value
+    );
+    button.disabled = false;
+    if (created) event.currentTarget.reset();
+  });
   qs("#users-settings-table").addEventListener("click", (event) => {
     const button = event.target.closest("[data-save-user]");
     if (!button) return;
   const user = users.find((item) => item.user === button.dataset.saveUser);
   if (!user) return;
   const nameInput = qs(`[data-config-name="${user.user}"]`);
+  const roleInput = qs(`[data-config-role="${user.user}"]`);
   user.name = nameInput.value.trim() || user.user;
+  user.role = roleInput?.value.trim() || "Usuario";
   saveUsersConfig();
   refreshCurrentUserLabel();
   showToast(`Acesso de ${user.name} salvo.`);

@@ -531,7 +531,7 @@
                 <select name="payment" id="sale-payment"></select>
               </label>
               <label>Prazo
-                <input name="paymentTerm" id="sale-payment-term" placeholder="Prazo do pedido" />
+                <select name="paymentTerm" id="sale-payment-term"></select>
               </label>
               <p class="search-status" id="sale-payment-rule-status"></p>
               <label>Observação
@@ -844,17 +844,13 @@
         <section class="panel config-tab-panel" data-report-tab-panel="vendas">
           <div class="panel-head">
             <h2>Relatorio de vendas</h2>
-            <div class="orders-filter">
-              <label>Vendedor
-                <select id="sales-report-seller-filter"></select>
-              </label>
+            <div class="inline-actions">
               <button class="secondary-btn" id="export-sales-report" type="button">Exportar Excel</button>
-              <button class="secondary-btn" id="clear-sales-report-filter" type="button">Limpar</button>
             </div>
           </div>
           <table class="report-table">
             <thead>
-              <tr>
+              <tr id="sales-report-head">
                 <th>Indicador</th>
                 <th class="right" id="report-month-1">Mes</th>
                 <th class="right" id="report-month-2">Mes</th>
@@ -864,6 +860,59 @@
             </thead>
             <tbody id="sales-report-table"></tbody>
           </table>
+          <section class="panel" id="sales-composition-panel" hidden style="margin-top: 18px;">
+            <div class="panel-head">
+              <div>
+                <h3 id="sales-composition-title">Composição do indicador</h3>
+                <small id="sales-composition-subtitle"></small>
+              </div>
+              <div class="inline-actions">
+                <span class="tag" id="sales-composition-count">0 registros</span>
+                <button class="secondary-btn" id="export-sales-composition" type="button">Exportar composição</button>
+                <button class="secondary-btn" id="close-sales-composition" type="button">Fechar</button>
+              </div>
+            </div>
+            <div class="orders-filter" style="margin: 12px 0 16px;">
+              <label>De
+                <input id="sales-composition-start-filter" type="date" />
+              </label>
+              <label>Até
+                <input id="sales-composition-end-filter" type="date" />
+              </label>
+              <label>Pedido
+                <input id="sales-composition-order-filter" type="search" placeholder="Número do pedido" />
+              </label>
+              <label>Cliente
+                <input id="sales-composition-customer-filter" type="search" placeholder="Nome do cliente" />
+              </label>
+              <label>Produto
+                <input id="sales-composition-product-filter" type="search" placeholder="Nome do produto" />
+              </label>
+              <button class="secondary-btn" id="clear-sales-composition-filter" type="button">Limpar filtros</button>
+            </div>
+            <div class="table-scroll">
+              <table class="report-table nowrap-table">
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Pedido</th>
+                    <th>Cliente</th>
+                    <th>Produto</th>
+                    <th class="right">Quantidade</th>
+                    <th class="right">Valor</th>
+                  </tr>
+                </thead>
+                <tbody id="sales-composition-table"></tbody>
+                <tfoot>
+                  <tr>
+                    <td colspan="4" class="right"><strong>Total</strong></td>
+                    <td class="right"><strong id="sales-composition-qty-total">0</strong></td>
+                    <td class="right"><strong id="sales-composition-value-total">R$ 0,00</strong></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </section>
         </section>
         <section class="panel config-tab-panel sales-by-seller-panel" data-report-tab-panel="vendedores" hidden>
           <div class="panel-head">
@@ -873,20 +922,12 @@
               <span class="tag" id="seller-sales-count">0 vendedores</span>
             </div>
           </div>
-          <table class="report-table">
-            <thead>
-              <tr>
-                <th>Vendedor</th>
-                <th class="right" id="seller-report-month-1">Mes</th>
-                <th class="right" id="seller-report-month-2">Mes</th>
-                <th class="right" id="seller-report-month-3">Mes</th>
-                <th class="right">Sacos</th>
-                <th class="right">Pedidos</th>
-                <th class="right">Total</th>
-              </tr>
-            </thead>
-            <tbody id="seller-sales-table"></tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="report-table nowrap-table">
+              <thead id="seller-report-head"></thead>
+              <tbody id="seller-sales-table"></tbody>
+            </table>
+          </div>
         </section>
         <section class="panel config-tab-panel" data-report-tab-panel="media-ponderada" hidden>
           <div class="panel-head">
@@ -1045,13 +1086,30 @@
         <section class="panel config-tab-panel" data-config-tab-panel="acessos">
           <div class="panel-head">
             <h2>Configuração de acessos</h2>
-            <span class="tag">6 acessos</span>
+            <span class="tag" id="users-settings-count">0 acessos</span>
           </div>
+          <form class="inline-form" id="new-user-form" style="margin-bottom:16px;">
+            <label>Nome exibido
+              <input id="new-user-name" required placeholder="Nome do usuário" />
+            </label>
+            <label>E-mail
+              <input id="new-user-email" type="email" required placeholder="usuario@empresa.com" />
+            </label>
+            <label>Senha inicial
+              <input id="new-user-password" type="password" minlength="6" required placeholder="Mínimo de 6 caracteres" />
+            </label>
+            <label>Perfil
+              <input id="new-user-role" required placeholder="Ex.: Vendas" />
+            </label>
+            <button class="primary-btn" type="submit">Cadastrar usuário</button>
+          </form>
           <table>
             <thead>
               <tr>
+                <th>Login</th>
                 <th>Nome exibido</th>
-                <th></th>
+                <th>Perfil</th>
+                <th class="right">Ações</th>
               </tr>
             </thead>
             <tbody id="users-settings-table"></tbody>
@@ -1425,6 +1483,6 @@
         console.error(event.error || event.message);
       });
     </script>
-    <script src="./app.js?v=20260713-total-pedido-cache"></script>
+    <script src="./app.js?v=20260819-lista-prazos-pedido"></script>
   </body>
 </html>
