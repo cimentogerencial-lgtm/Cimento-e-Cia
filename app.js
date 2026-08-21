@@ -435,7 +435,7 @@ state.customers = state.customers || [];
 state.customers.forEach((customer) => {
   normalizeCustomerRecord(customer);
   customer.salesperson = state.salespeople.includes(customer.salesperson) ? customer.salesperson : "";
-  customer.payment = state.paymentMethods.includes(customer.payment) ? customer.payment : "";
+  customer.payment = canonicalPaymentMethod(customer.payment);
   customer.paymentTerm = plainCustomerText(customer.paymentTerm || "");
 });
 restoreDouglasSellerCitiesFromCustomers();
@@ -820,7 +820,10 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.movements = mergeObjectArray(remoteState?.movements, localState?.movements, (item) => item.id || item.sourceId || `${item.sourceInvoice || ""}-${item.allocationId || ""}-${item.date || ""}-${normalizeSearch(item.op)}-${normalizeSearch(item.product)}-${item.qty || ""}`);
   merged.salespeople = mergePrimitiveArray(remoteState?.salespeople, localState?.salespeople, (value) => normalizeSearch(value));
   merged.drivers = mergePrimitiveArray(remoteState?.drivers, localState?.drivers, (value) => cleanDriverName(value));
-  merged.paymentMethods = mergePrimitiveArray(remoteState?.paymentMethods, localState?.paymentMethods, (value) => normalizeSearch(value));
+  merged.paymentMethods = mergePrimitiveArray(remoteState?.paymentMethods, localState?.paymentMethods, (value) => {
+    const method = String(value || "").trim();
+    return defaultPaymentMethods.find((item) => normalizeSearch(item) === normalizeSearch(method)) || method;
+  });
   merged.paymentTerms = mergePrimitiveArray(remoteState?.paymentTerms, localState?.paymentTerms, (value) => String(value || "").trim());
   merged.freightTypes = { ...(remoteState?.freightTypes || {}), ...(localState?.freightTypes || {}) };
   merged.dashboardLockOverrides = { ...(remoteState?.dashboardLockOverrides || {}), ...(localState?.dashboardLockOverrides || {}) };
@@ -841,6 +844,10 @@ function applyMergedCloudState(cloudState, shouldKeepLocalPendingChanges = false
     ? mergeCloudAndLocalState(cloudState || {}, localSnapshot)
     : cloneStateSnapshot(cloudState || {});
   replaceStateContents(nextState);
+  state.customers = Array.isArray(state.customers) ? state.customers : [];
+  state.customers.forEach((customer) => {
+    customer.payment = canonicalPaymentMethod(customer.payment);
+  });
   state.deletedCustomerKeys = Array.isArray(state.deletedCustomerKeys) ? state.deletedCustomerKeys : [];
   const customerCountBeforeCleanup = (state.customers || []).length;
   state.customers = (state.customers || []).filter((customer) => {
@@ -1596,6 +1603,12 @@ function normalizeSalespersonName(name) {
   return state.salespeople.find((seller) => normalizeSearch(seller) === normalizeSearch(typedName)) || "";
 }
 
+function canonicalPaymentMethod(value) {
+  const payment = String(value || "").trim();
+  if (!payment) return "";
+  return state.paymentMethods.find((method) => normalizeSearch(method) === normalizeSearch(payment)) || "";
+}
+
 function linkedCustomerSalesperson(customer) {
   if (!customer) return state.salespeople[0] || "";
 
@@ -1661,21 +1674,19 @@ function paymentRuleLabel(rule) {
 
 function resolvePaymentRule(customer, salesperson) {
   if (!customer) return null;
-  if (customer.payment && customer.paymentTerm) {
+  const customerPayment = canonicalPaymentMethod(customer.payment);
+  const customerPaymentTerm = plainCustomerText(customer.paymentTerm || "");
+  if (customerPayment || customerPaymentTerm) {
     return {
       id: `cliente-${customer.document}`,
       type: "customer",
       reference: customer.name,
       document: customer.document,
-      payment: customer.payment,
-      term: customer.paymentTerm
+      payment: customerPayment,
+      term: customerPaymentTerm
     };
   }
-  const doc = cleanDocument(customer.document);
-  const city = normalizeSearch(customerCityText(customer));
-  return state.paymentRules.find((rule) => rule.type === "city" && normalizeSearch(rule.reference) === city)
-    || state.paymentRules.find((rule) => rule.type === "seller" && normalizeSearch(rule.reference) === normalizeSearch(salesperson))
-    || null;
+  return null;
 }
 
 function applyPaymentRuleForCustomer(customer) {
@@ -1685,11 +1696,11 @@ function applyPaymentRuleForCustomer(customer) {
   const paymentTermInput = qs("#sale-payment-term");
   if (!paymentSelect) return null;
   if (rule) {
-    if (!state.paymentMethods.includes(rule.payment)) {
+    if (rule.payment && !state.paymentMethods.includes(rule.payment)) {
       state.paymentMethods.push(rule.payment);
       renderPaymentMethods();
     }
-    paymentSelect.value = rule.payment;
+    paymentSelect.value = rule.payment || "";
     paymentSelect.disabled = false;
     paymentSelect.dataset.term = rule.term || "";
     paymentSelect.dataset.rule = paymentRuleLabel(rule);
