@@ -1700,12 +1700,17 @@ function applyPaymentRuleForCustomer(customer) {
       state.paymentMethods.push(rule.payment);
       renderPaymentMethods();
     }
+    if (rule.term && !state.paymentTerms.some((term) => normalizeSearch(term) === normalizeSearch(rule.term))) {
+      state.paymentTerms.push(rule.term);
+      renderPaymentTerms();
+    }
+    const selectedCustomerTerm = state.paymentTerms.find((term) => normalizeSearch(term) === normalizeSearch(rule.term)) || rule.term || "";
     paymentSelect.value = rule.payment || "";
     paymentSelect.disabled = false;
-    paymentSelect.dataset.term = rule.term || "";
+    paymentSelect.dataset.term = selectedCustomerTerm;
     paymentSelect.dataset.rule = paymentRuleLabel(rule);
     if (paymentTermInput) {
-      paymentTermInput.value = rule.term || "";
+      paymentTermInput.value = selectedCustomerTerm;
       paymentTermInput.readOnly = false;
     }
     const status = qs("#sale-payment-rule-status");
