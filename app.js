@@ -814,8 +814,8 @@ function mergeCloudAndLocalState(remoteState, localState) {
   );
   merged.freightRates = normalizeFreightRatesList(mergeObjectArray(remoteState?.freightRates, localState?.freightRates, (item) => item.id || `${item.type || ""}-${normalizeSearch(item.city)}`));
   merged.financialAccounts = mergeLatestUpdatedObjectArray(remoteState?.financialAccounts, localState?.financialAccounts, (item) => item.id || normalizeSearch(item.name));
-  merged.notes = mergeObjectArray(remoteState?.notes, localState?.notes, (item) => item.id || item.invoice || item.key);
-  merged.stockEntries = mergeObjectArray(remoteState?.stockEntries, localState?.stockEntries, (item) => item.id || `${item.invoice || ""}-${normalizeSearch(item.product)}-${normalizeLocation(item.location)}-${item.quantity || ""}-${item.date || ""}`);
+  merged.notes = mergeLatestUpdatedObjectArray(remoteState?.notes, localState?.notes, (item) => item.id || `${item.number || item.invoice || item.key || ""}-${normalizeSearch(item.supplier)}`);
+  merged.stockEntries = mergeLatestUpdatedObjectArray(remoteState?.stockEntries, localState?.stockEntries, (item) => item.id || `${item.invoice || ""}-${normalizeSearch(item.product)}-${normalizeLocation(item.location)}-${item.quantity || ""}-${item.date || ""}`);
   merged.stockEntries = (merged.stockEntries || []).filter((entry) => !isDeletedManualStockEntry(entry, merged.deletedManualStockEntryIds));
   merged.movements = mergeObjectArray(remoteState?.movements, localState?.movements, (item) => item.id || item.sourceId || `${item.sourceInvoice || ""}-${item.allocationId || ""}-${item.date || ""}-${normalizeSearch(item.op)}-${normalizeSearch(item.product)}-${item.qty || ""}`);
   merged.salespeople = mergePrimitiveArray(remoteState?.salespeople, localState?.salespeople, (value) => normalizeSearch(value));
@@ -1022,12 +1022,17 @@ function debounce(callback, delay = 350) {
   };
 }
 
+let toastHideTimer = null;
+
 function showToast(message) {
   const toast = qs("#toast");
   toast.textContent = message;
   toast.classList.add("show");
-  const delay = String(message || "").toLowerCase().includes("firebase") ? 15000 : 2800;
-  window.setTimeout(() => toast.classList.remove("show"), delay);
+  const messageText = String(message || "").toLowerCase();
+  const isImportant = ["firebase", "erro", "falha", "não confirm", "nao confirm"].some((term) => messageText.includes(term));
+  const delay = isImportant ? 20000 : 7000;
+  window.clearTimeout(toastHideTimer);
+  toastHideTimer = window.setTimeout(() => toast.classList.remove("show"), delay);
 }
 
 function showCloudError(message) {
@@ -3640,6 +3645,7 @@ function beginEntryDistribution(entry) {
   }
   entry.location = "";
   entry.distributionStarted = true;
+  entry.updatedAt = new Date().toISOString();
 }
 
 function updateInvoiceDistributionStatus(entry) {
@@ -3662,6 +3668,7 @@ function updateInvoiceDistributionStatus(entry) {
           ? "Distribuição pendente"
           : "Importada";
       note.location = "";
+      note.updatedAt = new Date().toISOString();
     }
   });
 }
@@ -8581,7 +8588,7 @@ function createDirectOrderFromEntryGroup(entryIdsValue) {
   showToast(`Pedido unico aberto com ${entries.length} produto(s). Saldo total: ${formatQty(totalRemaining)}.`);
 }
 
-function updateStockEntryDestination(entryId, nextLocationValue) {
+async function updateStockEntryDestination(entryId, nextLocationValue) {
   const entry = state.stockEntries.find((item) => item.id === entryId);
   if (!entry) return;
   if (!nextLocationValue || !stockLocations.includes(nextLocationValue)) {
@@ -8620,10 +8627,16 @@ function updateStockEntryDestination(entryId, nextLocationValue) {
     qty: remaining
   });
   updateInvoiceDistributionStatus(entry);
+  entry.updatedAt = new Date().toISOString();
 
   saveState();
-  saveStateToCloudNow();
+  const cloudSaved = await saveStateToCloudNow();
   renderAll();
+  if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+    showCloudError("Entrada de estoque mantida neste computador e aguardando confirmação do Firebase. Não feche esta página.");
+    showToast("Entrada ainda não confirmada pelo Firebase.");
+    return;
+  }
   showToast(`Saldo de ${formatQty(remaining)} lancado no estoque de ${nextLocationValue}.`);
 }
 
@@ -9108,11 +9121,13 @@ function importNote(xmlText, details = {}) {
       brand: item.brand,
       loadedBy,
       supplier: note.supplier,
-      observation: note.observation || ""
+      observation: note.observation || "",
+      updatedAt: new Date().toISOString()
     });
   });
   cleanupDuplicateImportedStockEntries();
   state.notes.unshift({
+    id: `NF-${note.number}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
     number: note.number,
     supplier: note.supplier,
     issueDateTime: note.issueDateTime || note.issue,
@@ -9123,7 +9138,8 @@ function importNote(xmlText, details = {}) {
     ovNumber,
     factoryOrder,
     loadedBy,
-    location
+    location,
+    updatedAt: new Date().toISOString()
   });
   if (!details.silent) {
     saveState();
@@ -9219,8 +9235,13 @@ async function importXmlFiles(files) {
   }
 
   saveState();
-  saveStateToCloudNow();
+  const cloudSaved = await saveStateToCloudNow();
   renderAll();
+  if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+    showCloudError("Notas e entradas mantidas neste computador e aguardando confirmação do Firebase. Não feche esta página.");
+    showToast(`${imported} XML processados, mas o Firebase ainda não confirmou o salvamento.`);
+    return;
+  }
   showToast(`${imported} XML importados. ${duplicated} duplicados, ${refused} recusados, ${failed} com erro.`);
 }
 
