@@ -7825,6 +7825,12 @@ async function handleSale(event) {
 
     replaceOpenReceivablesForOrder(order);
 
+    if (documentValue && customer) {
+      customer.salesperson = orderSalesperson || customer.salesperson || "";
+      customer.payment = orderPayment || customer.payment || "";
+      customer.paymentTerm = orderPaymentTerm || customer.paymentTerm || "";
+      customer.updatedAt = new Date().toISOString();
+    }
     resetSaleForm();
     saveState();
     const cloudSaved = await saveStateToCloudNow();
@@ -7932,6 +7938,12 @@ async function handleSale(event) {
   if (isDirectLoad) {
     order.distributionPending = hasPendingDirectDistribution;
     order.distributionComplete = !hasPendingDirectDistribution;
+  }
+  if (documentValue && customer) {
+    customer.salesperson = orderSalesperson || customer.salesperson || "";
+    customer.payment = orderPayment || customer.payment || "";
+    customer.paymentTerm = orderPaymentTerm || customer.paymentTerm || "";
+    customer.updatedAt = new Date().toISOString();
   }
   resetSaleForm();
   saveState();
