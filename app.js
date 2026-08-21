@@ -434,8 +434,10 @@ state.receivables = state.receivables || [];
 state.customers = state.customers || [];
 state.customers.forEach((customer) => {
   normalizeCustomerRecord(customer);
-  customer.salesperson = state.salespeople.includes(customer.salesperson) ? customer.salesperson : "";
-  customer.payment = canonicalPaymentMethod(customer.payment);
+  const savedSalesperson = plainCustomerText(customer.salesperson || "");
+  customer.salesperson = normalizeSalespersonName(savedSalesperson) || savedSalesperson;
+  const savedPayment = plainCustomerText(customer.payment || "");
+  customer.payment = canonicalPaymentMethod(savedPayment) || savedPayment;
   customer.paymentTerm = plainCustomerText(customer.paymentTerm || "");
 });
 restoreDouglasSellerCitiesFromCustomers();
@@ -846,7 +848,11 @@ function applyMergedCloudState(cloudState, shouldKeepLocalPendingChanges = false
   replaceStateContents(nextState);
   state.customers = Array.isArray(state.customers) ? state.customers : [];
   state.customers.forEach((customer) => {
-    customer.payment = canonicalPaymentMethod(customer.payment);
+    const savedSalesperson = plainCustomerText(customer.salesperson || "");
+    customer.salesperson = normalizeSalespersonName(savedSalesperson) || savedSalesperson;
+    const savedPayment = plainCustomerText(customer.payment || "");
+    customer.payment = canonicalPaymentMethod(savedPayment) || savedPayment;
+    customer.paymentTerm = plainCustomerText(customer.paymentTerm || "");
   });
   state.deletedCustomerKeys = Array.isArray(state.deletedCustomerKeys) ? state.deletedCustomerKeys : [];
   const customerCountBeforeCleanup = (state.customers || []).length;
@@ -868,9 +874,8 @@ function applyMergedCloudState(cloudState, shouldKeepLocalPendingChanges = false
     syncUsersConfigToState();
   }
   const cleanedDuplicateEntries = cleanupDuplicateImportedStockEntries();
-  const cleanedDivinopolisCustomers = removeLegacyDivinopolisEdmilsonAssignments();
   const normalizedStockProducts = normalizeStockProductsAndEntries();
-  return cleanedDuplicateEntries || cleanedDivinopolisCustomers || normalizedStockProducts || cleanedDeletedCustomers || cleanedSellerCities;
+  return cleanedDuplicateEntries || normalizedStockProducts || cleanedDeletedCustomers || cleanedSellerCities;
 }
 
 async function mergeLatestCloudStateBeforeSave() {
@@ -1375,21 +1380,34 @@ function paymentMethodOptions(selected = "") {
 function renderCustomerPaymentOptions(selected = "") {
   const select = qs("#customer-payment");
   if (!select) return;
-  const current = selected || select.value || state.paymentMethods[0] || "";
-  select.innerHTML = state.paymentMethods
-    .map((method) => `<option value="${escapeAttr(method)}" ${method === current ? "selected" : ""}>${method}</option>`)
-    .join("");
-  select.value = state.paymentMethods.includes(current) ? current : state.paymentMethods[0] || "";
+  const savedValue = plainCustomerText(selected || "");
+  const current = canonicalPaymentMethod(savedValue) || savedValue;
+  const methods = [...state.paymentMethods];
+  if (current && !methods.some((method) => normalizeSearch(method) === normalizeSearch(current))) {
+    methods.push(current);
+  }
+  select.innerHTML = [
+    `<option value="">Selecione a forma de pagamento</option>`,
+    ...methods.map((method) => `<option value="${escapeAttr(method)}">${escapeHtml(method)}</option>`)
+  ].join("");
+  select.value = methods.find((method) => normalizeSearch(method) === normalizeSearch(current)) || "";
 }
 
 function renderCustomerPaymentTermOptions(selected = "") {
   const select = qs("#customer-payment-term");
   if (!select) return;
-  const current = selected || select.value || state.paymentTerms[0] || "";
-  select.innerHTML = state.paymentTerms.length
-    ? state.paymentTerms.map((term) => `<option value="${escapeAttr(term)}" ${term === current ? "selected" : ""}>${term}</option>`).join("")
+  const current = plainCustomerText(selected || "");
+  const terms = [...state.paymentTerms];
+  if (current && !terms.some((term) => normalizeSearch(term) === normalizeSearch(current))) {
+    terms.push(current);
+  }
+  select.innerHTML = terms.length
+    ? [
+        `<option value="">Selecione o prazo</option>`,
+        ...terms.map((term) => `<option value="${escapeAttr(term)}">${escapeHtml(term)}</option>`)
+      ].join("")
     : `<option value="">Nenhum prazo cadastrado</option>`;
-  select.value = state.paymentTerms.includes(current) ? current : state.paymentTerms[0] || "";
+  select.value = terms.find((term) => normalizeSearch(term) === normalizeSearch(current)) || "";
 }
 
 function renderPaymentTerms() {
@@ -1547,11 +1565,16 @@ function salespersonOptions(selected = "") {
 function renderCustomerSalespersonOptions(selected = "") {
   const select = qs("#customer-salesperson");
   if (!select) return;
-  const current = selected || select.value || "";
-  select.innerHTML = '<option value="">Sem vendedor definido</option>' + state.salespeople
-    .map((seller) => `<option value="${escapeAttr(seller)}" ${seller === current ? "selected" : ""}>${seller}</option>`)
+  const savedValue = plainCustomerText(selected || "");
+  const current = normalizeSalespersonName(savedValue) || savedValue;
+  const sellers = [...state.salespeople];
+  if (current && !sellers.some((seller) => normalizeSearch(seller) === normalizeSearch(current))) {
+    sellers.push(current);
+  }
+  select.innerHTML = '<option value="">Sem vendedor definido</option>' + sellers
+    .map((seller) => `<option value="${escapeAttr(seller)}">${escapeHtml(seller)}</option>`)
     .join("");
-  select.value = state.salespeople.includes(current) ? current : "";
+  select.value = sellers.find((seller) => normalizeSearch(seller) === normalizeSearch(current)) || "";
 }
 
 function customerCityText(customer) {
@@ -6034,7 +6057,7 @@ function deleteProduct(productId) {
   showToast("Produto excluído.");
 }
 
-function handleCustomerForm(event) {
+async function handleCustomerForm(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   const documentValue = cleanDocument(data.get("document"));
@@ -6047,8 +6070,10 @@ function handleCustomerForm(event) {
   const uf = String(data.get("uf") || "").trim().toUpperCase();
   const address = customerFullAddress({ street, number, neighborhood, city, uf });
   const phone = String(data.get("phone")).trim();
-  const customerSalesperson = state.salespeople.includes(data.get("customerSalesperson")) ? data.get("customerSalesperson") : "";
-  const customerPayment = state.paymentMethods.includes(data.get("customerPayment")) ? data.get("customerPayment") : "";
+  const typedCustomerSalesperson = plainCustomerText(data.get("customerSalesperson") || "");
+  const customerSalesperson = normalizeSalespersonName(typedCustomerSalesperson) || typedCustomerSalesperson;
+  const typedCustomerPayment = plainCustomerText(data.get("customerPayment") || "");
+  const customerPayment = canonicalPaymentMethod(typedCustomerPayment) || typedCustomerPayment;
   const customerPaymentTerm = plainCustomerText(data.get("customerPaymentTerm") || "");
   if (![11, 14].includes(documentValue.length)) {
     showToast("Informe CPF ou CNPJ valido.");
@@ -6079,6 +6104,9 @@ function handleCustomerForm(event) {
 
     const oldDocument = customer.document;
     const oldName = customer.name;
+    const savedCustomerSalesperson = customer.salesperson || "";
+    const savedCustomerPayment = customer.payment || "";
+    const savedCustomerPaymentTerm = customer.paymentTerm || "";
     customer.document = documentValue;
     customer.name = name;
     customer.fantasy = plainCustomerText(fantasy);
@@ -6089,9 +6117,9 @@ function handleCustomerForm(event) {
     customer.city = plainCustomerText(city);
     customer.uf = plainCustomerText(uf);
     customer.phone = phone;
-    customer.salesperson = customerSalesperson;
-    customer.payment = customerPayment;
-    customer.paymentTerm = customerPaymentTerm;
+    customer.salesperson = customerSalesperson || savedCustomerSalesperson;
+    customer.payment = customerPayment || savedCustomerPayment;
+    customer.paymentTerm = customerPaymentTerm || savedCustomerPaymentTerm;
     customer.lastPrices = customer.lastPrices || {};
     customer.updatedAt = new Date().toISOString();
 
@@ -6113,7 +6141,12 @@ function handleCustomerForm(event) {
 
     resetCustomerForm();
     saveState();
+    const cloudSaved = await saveStateToCloudNow();
     renderAll();
+    if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+      showCloudError("Cadastro do cliente mantido neste computador, mas ainda não foi confirmado pelo Firebase. Não feche esta página.");
+      return;
+    }
     showToast("Cliente atualizado.");
     return;
   }
@@ -6135,7 +6168,12 @@ function handleCustomerForm(event) {
   });
   resetCustomerForm();
   saveState();
+  const cloudSaved = await saveStateToCloudNow();
   renderAll();
+  if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+    showCloudError("Cadastro do cliente mantido neste computador, mas ainda não foi confirmado pelo Firebase. Não feche esta página.");
+    return;
+  }
   showToast("Cliente salvo.");
 }
 
@@ -6741,24 +6779,7 @@ function restoreDouglasSellerCitiesFromCustomers() {
 }
 
 function removeLegacyDivinopolisEdmilsonAssignments() {
-  const version = "remove-divinopolis-edmilson-2026-07-29-v2";
-  state.migrationVersions = state.migrationVersions || {};
-  const migrationCompleted = Boolean(state.migrationVersions[version]);
-
-  let changed = false;
-
-  state.customers.forEach((customer) => {
-    const isDivinopolis = normalizeSearch(customerCityText(customer)) === "divinopolis";
-    const isEdmilson = normalizeSearch(customer.salesperson) === "edmilson";
-    if (!isDivinopolis || !isEdmilson) return;
-    if (migrationCompleted && customer.updatedAt) return;
-    customer.salesperson = "";
-    customer.updatedAt = new Date().toISOString();
-    changed = true;
-  });
-
-  state.migrationVersions[version] = true;
-  return changed;
+  return false;
 }
 
 function paymentRuleKey(rule) {
@@ -6926,8 +6947,10 @@ function upsertCustomer(data) {
   customer.zip = plainCustomerText(data.zip || customer.zip || "");
   customer.city = plainCustomerText(data.city || customer.city || "");
   customer.uf = plainCustomerText(data.uf || customer.uf || "");
-  customer.salesperson = state.salespeople.includes(data.salesperson) ? data.salesperson : customer.salesperson || "";
-  customer.payment = state.paymentMethods.includes(data.payment) ? data.payment : customer.payment || "";
+  const incomingSalesperson = plainCustomerText(data.salesperson || "");
+  customer.salesperson = normalizeSalespersonName(incomingSalesperson) || incomingSalesperson || customer.salesperson || "";
+  const incomingPayment = plainCustomerText(data.payment || "");
+  customer.payment = canonicalPaymentMethod(incomingPayment) || incomingPayment || customer.payment || "";
   customer.paymentTerm = plainCustomerText(data.paymentTerm || customer.paymentTerm || "");
   customer.lastPrices = data.lastPrices || customer.lastPrices || {};
   customer.updatedAt = new Date().toISOString();
