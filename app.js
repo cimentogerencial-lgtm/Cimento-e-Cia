@@ -1674,8 +1674,15 @@ function paymentRuleLabel(rule) {
 
 function resolvePaymentRule(customer, salesperson) {
   if (!customer) return null;
-  const customerPayment = canonicalPaymentMethod(customer.payment);
-  const customerPaymentTerm = plainCustomerText(customer.paymentTerm || "");
+  const customerDocument = cleanDocument(customer.document);
+  const savedCustomerRule = state.paymentRules.find((rule) => {
+    if (rule.type !== "customer") return false;
+    const sameDocument = customerDocument && cleanDocument(rule.document) === customerDocument;
+    const sameName = normalizeSearch(rule.reference) === normalizeSearch(customer.name);
+    return sameDocument || sameName;
+  });
+  const customerPayment = canonicalPaymentMethod(customer.payment || savedCustomerRule?.payment);
+  const customerPaymentTerm = plainCustomerText(customer.paymentTerm || savedCustomerRule?.term || "");
   if (customerPayment || customerPaymentTerm) {
     return {
       id: `cliente-${customer.document}`,
