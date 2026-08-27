@@ -3220,21 +3220,22 @@ function renderStockLedger(productId) {
 
   const locationLabel = ledger.selectedLocation || "Todas as unidades";
   qs("#stock-ledger-title").textContent = `Composicao do saldo - ${ledger.product.product} - ${locationLabel}`;
-  const ledgerDateInput = qs("#stock-ledger-date-filter");
-  if (ledgerDateInput && !ledgerDateInput.value) ledgerDateInput.value = today;
-  const filterDate = ledgerDateInput?.value || today;
-  const rows = filterDate ? ledger.rows.filter((row) => row.date === filterDate) : ledger.rows;
-  const previousBalance = filterDate
-    ? ledger.rows
-      .filter((row) => row.date < filterDate)
-      .reduce((sum, row) => sum + row.entry - row.exit, 0)
-    : 0;
-  const finalBalance = filterDate
-    ? previousBalance + rows.reduce((sum, row) => sum + row.entry - row.exit, 0)
-    : ledger.balance;
+  const ledgerStartDateInput = qs("#stock-ledger-start-date-filter");
+  const ledgerEndDateInput = qs("#stock-ledger-end-date-filter");
+  if (ledgerStartDateInput && !ledgerStartDateInput.value) ledgerStartDateInput.value = today;
+  if (ledgerEndDateInput && !ledgerEndDateInput.value) ledgerEndDateInput.value = today;
+  const startDate = ledgerStartDateInput?.value || today;
+  const endDate = ledgerEndDateInput?.value || today;
+  const periodStart = startDate && endDate && startDate > endDate ? endDate : startDate;
+  const periodEnd = startDate && endDate && startDate > endDate ? startDate : endDate;
+  const rows = ledger.rows.filter((row) => (!periodStart || row.date >= periodStart) && (!periodEnd || row.date <= periodEnd));
+  const previousBalance = ledger.rows
+    .filter((row) => !periodStart || row.date < periodStart)
+    .reduce((sum, row) => sum + row.entry - row.exit, 0);
+  const finalBalance = previousBalance + rows.reduce((sum, row) => sum + row.entry - row.exit, 0);
   const displayRows = [
     {
-      date: filterDate || (rows[0]?.date || today),
+      date: periodStart || (rows[0]?.date || today),
       type: "Saldo anterior",
       document: "-",
       party: "-",
@@ -3244,7 +3245,7 @@ function renderStockLedger(productId) {
     },
     ...rows,
     {
-      date: filterDate || (rows[rows.length - 1]?.date || today),
+      date: periodEnd || (rows[rows.length - 1]?.date || today),
       type: "Saldo final",
       document: "-",
       party: "-",
@@ -3253,9 +3254,7 @@ function renderStockLedger(productId) {
       balance: finalBalance
     }
   ];
-  qs("#stock-ledger-balance").textContent = filterDate
-    ? `Saldo anterior ${formatQty(previousBalance)} | Saldo final ${formatQty(finalBalance)} | ${rows.length} movimentações`
-    : `Unidade ${locationLabel} | Entradas ${formatQty(ledger.entries)} | Saidas ${formatQty(ledger.exits)} | Saldo calculado ${formatQty(ledger.balance)}`;
+  qs("#stock-ledger-balance").textContent = `Saldo anterior ${formatQty(previousBalance)} | Saldo final ${formatQty(finalBalance)} | ${rows.length} movimentações`;
   qs("#stock-ledger-table").innerHTML = displayRows.length ? displayRows.map((row) => `
     <tr class="${row.isManualMovement ? "manual-adjustment-row" : ""}">
       <td>${row.date.split("-").reverse().join("/")}</td>
@@ -3268,7 +3267,7 @@ function renderStockLedger(productId) {
     </tr>
   `).join("") : `
     <tr>
-      <td colspan="7">Nenhuma movimentação encontrada para este produto${filterDate ? " nesta data" : ""}.</td>
+      <td colspan="7">Nenhuma movimentação encontrada para este produto neste período.</td>
     </tr>
   `;
 }
@@ -9395,11 +9394,12 @@ function bindEvents() {
     if (entryId) moveDailyLoadEntry(entryId, slot.dataset.loadSlot);
   });
   qs("#stock-location-filter").addEventListener("change", renderStock);
-  qs("#stock-ledger-date-filter").addEventListener("input", () => {
-    renderStockLedger(selectedStockProductId);
+  ["#stock-ledger-start-date-filter", "#stock-ledger-end-date-filter"].forEach((selector) => {
+    qs(selector).addEventListener("input", () => renderStockLedger(selectedStockProductId));
   });
   qs("#clear-stock-ledger-filter").addEventListener("click", () => {
-    qs("#stock-ledger-date-filter").value = today;
+    qs("#stock-ledger-start-date-filter").value = today;
+    qs("#stock-ledger-end-date-filter").value = today;
     renderStockLedger(selectedStockProductId);
   });
   [
