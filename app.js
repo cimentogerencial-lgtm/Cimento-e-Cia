@@ -4495,20 +4495,43 @@ function sellerReportData() {
   const months = sellerReportMonths();
   const start = qs("#seller-report-start-filter")?.value || "";
   const end = qs("#seller-report-end-filter")?.value || "";
+  const productFilter = normalizeSearch(qs("#seller-report-product-filter")?.value || "");
+  const productOptions = Array.from(new Set([
+    ...state.stock.map((item) => plainCustomerText(item.product || "")),
+    ...state.orders.flatMap((order) => orderItems(order).map((item) => plainCustomerText(item.product || "")))
+  ].filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  const productOptionsList = qs("#seller-report-product-options");
+  if (productOptionsList) {
+    productOptionsList.innerHTML = productOptions.map((product) => `<option value="${escapeAttr(product)}"></option>`).join("");
+  }
+  const reportOrders = state.orders
+    .filter((order) => !start || String(order.date || "") >= start)
+    .filter((order) => !end || String(order.date || "") <= end)
+    .map((order) => {
+      if (!productFilter) {
+        return { ...order, reportQty: Number(order.qty || 0), reportValue: Number(order.value || 0) };
+      }
+      const matchingItems = orderItems(order).filter((item) => normalizeSearch(item.product || "").includes(productFilter));
+      if (!matchingItems.length) return null;
+      return {
+        ...order,
+        reportQty: matchingItems.reduce((sum, item) => sum + Number(item.qty || 0), 0),
+        reportValue: matchingItems.reduce((sum, item) => sum + Number(item.value || (Number(item.qty || 0) * Number(item.price || 0))), 0)
+      };
+    })
+    .filter(Boolean);
   const sellerGroups = new Map();
-  state.orders.forEach((order) => {
+  reportOrders.forEach((order) => {
     const key = reportSellerKey(order.salesperson);
     if (!sellerGroups.has(key)) sellerGroups.set(key, reportSellerLabel(order.salesperson));
   });
   const rows = Array.from(sellerGroups, ([key, label]) => ({ key, label }))
     .map((seller) => {
-    const orders = state.orders.filter((order) => reportSellerKey(order.salesperson) === seller.key)
-      .filter((order) => !start || String(order.date || "") >= start)
-      .filter((order) => !end || String(order.date || "") <= end);
+    const orders = reportOrders.filter((order) => reportSellerKey(order.salesperson) === seller.key);
     const monthStats = months.map((month) => {
       const monthOrders = orders.filter((order) => String(order.date || "").slice(0, 7) === month.key);
-      const value = monthOrders.reduce((sum, order) => sum + Number(order.value || 0), 0);
-      const bags = monthOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+      const value = monthOrders.reduce((sum, order) => sum + Number(order.reportValue || 0), 0);
+      const bags = monthOrders.reduce((sum, order) => sum + Number(order.reportQty || 0), 0);
       return {
         month,
         value,
@@ -4517,8 +4540,8 @@ function sellerReportData() {
         average: bags ? value / bags : 0
       };
     });
-    const bags = orders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
-    const total = orders.reduce((sum, order) => sum + Number(order.value || 0), 0);
+    const bags = orders.reduce((sum, order) => sum + Number(order.reportQty || 0), 0);
+    const total = orders.reduce((sum, order) => sum + Number(order.reportValue || 0), 0);
     return {
       seller: seller.label,
       monthStats,
@@ -9833,7 +9856,8 @@ function bindEvents() {
   });
   qs("#export-sales-report").addEventListener("click", exportSalesReportExcel);
   qs("#export-seller-report").addEventListener("click", exportSellerReportExcel);
-  ["#seller-report-start-filter", "#seller-report-end-filter"].forEach((selector) => {
+  ["#seller-report-start-filter", "#seller-report-end-filter", "#seller-report-product-filter"].forEach((selector) => {
+    qs(selector).addEventListener("input", renderSellerReport);
     qs(selector).addEventListener("change", renderSellerReport);
   });
   qsa("[data-seller-report-period]").forEach((button) => {
