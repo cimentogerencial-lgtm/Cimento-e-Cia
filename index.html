@@ -851,6 +851,13 @@
               <button class="secondary-btn" id="export-sales-report" type="button">Exportar Excel</button>
             </div>
           </div>
+          <div class="orders-filter report-filter-grid" style="margin-bottom:16px;">
+            <label>Produto
+              <select id="sales-report-product-filter">
+                <option value="">Todos os produtos</option>
+              </select>
+            </label>
+          </div>
           <table class="report-table">
             <thead>
               <tr id="sales-report-head">
@@ -889,7 +896,9 @@
                 <input id="sales-composition-customer-filter" type="search" placeholder="Nome do cliente" />
               </label>
               <label>Produto
-                <input id="sales-composition-product-filter" type="search" placeholder="Nome do produto" />
+                <select id="sales-composition-product-filter">
+                  <option value="">Todos os produtos</option>
+                </select>
               </label>
               <button class="secondary-btn" id="clear-sales-composition-filter" type="button">Limpar filtros</button>
             </div>
@@ -933,8 +942,9 @@
               <input id="seller-report-end-filter" type="date" />
             </label>
             <label>Produto
-              <input id="seller-report-product-filter" type="search" list="seller-report-product-options" placeholder="Todos os produtos" />
-              <datalist id="seller-report-product-options"></datalist>
+              <select id="seller-report-product-filter">
+                <option value="">Todos os produtos</option>
+              </select>
             </label>
             <button class="secondary-btn" type="button" data-seller-report-period="3">Últimos 3 meses</button>
             <button class="secondary-btn" type="button" data-seller-report-period="6">Últimos 6 meses</button>

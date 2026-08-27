@@ -4427,17 +4427,30 @@ function salesReportMonths() {
 
 function salesReportFilteredOrders() {
   const filters = salesReportFilters();
-  return state.orders.filter((order) => {
-    const date = String(order.date || "");
-    if (filters.start && date < filters.start) return false;
-    if (filters.end && date > filters.end) return false;
-    if (filters.seller && reportSellerKey(order.salesperson) !== filters.seller) return false;
-    const customerText = normalizeSearch(`${order.customer || ""} ${order.customerDoc || ""}`);
-    if (filters.customer && !customerText.includes(filters.customer)) return false;
-    const productText = normalizeSearch(orderItems(order).map((item) => item.product || "").join(" "));
-    if (filters.product && !productText.includes(filters.product)) return false;
-    return true;
-  });
+  return state.orders
+    .filter((order) => {
+      const date = String(order.date || "");
+      if (filters.start && date < filters.start) return false;
+      if (filters.end && date > filters.end) return false;
+      if (filters.seller && reportSellerKey(order.salesperson) !== filters.seller) return false;
+      const customerText = normalizeSearch(`${order.customer || ""} ${order.customerDoc || ""}`);
+      return !filters.customer || customerText.includes(filters.customer);
+    })
+    .map((order) => {
+      const items = orderItems(order);
+      const reportItems = filters.product
+        ? items.filter((item) => normalizeSearch(item.product || "") === filters.product)
+        : items;
+      if (filters.product && !reportItems.length) return null;
+      const reportQty = filters.product
+        ? reportItems.reduce((sum, item) => sum + Number(item.qty || 0), 0)
+        : Number(order.qty || 0);
+      const reportValue = filters.product
+        ? reportItems.reduce((sum, item) => sum + Number(item.value || (Number(item.qty || 0) * Number(item.price || 0))), 0)
+        : Number(order.value || 0);
+      return { ...order, reportItems, reportQty, reportValue };
+    })
+    .filter(Boolean);
 }
 
 function salesReportData() {
@@ -4448,10 +4461,10 @@ function salesReportData() {
     const orders = filteredOrders.filter((order) => String(order.date || "").slice(0, 7) === month.key);
     const salesOrders = orders.filter((order) => order.pickupOrder !== true);
     const pickupOrders = orders.filter((order) => order.pickupOrder === true);
-    const value = salesOrders.reduce((sum, order) => sum + Number(order.value || 0), 0);
-    const pickupValue = pickupOrders.reduce((sum, order) => sum + Number(order.value || 0), 0);
-    const bags = salesOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
-    const pickupBags = pickupOrders.reduce((sum, order) => sum + Number(order.qty || 0), 0);
+    const value = salesOrders.reduce((sum, order) => sum + Number(order.reportValue || 0), 0);
+    const pickupValue = pickupOrders.reduce((sum, order) => sum + Number(order.reportValue || 0), 0);
+    const bags = salesOrders.reduce((sum, order) => sum + Number(order.reportQty || 0), 0);
+    const pickupBags = pickupOrders.reduce((sum, order) => sum + Number(order.reportQty || 0), 0);
     return {
       month,
       orders: salesOrders.length,
@@ -4491,18 +4504,30 @@ function sellerReportMonths() {
   return months;
 }
 
+function registeredProductNames() {
+  const products = new Map();
+  state.stock.forEach((item) => {
+    const product = plainCustomerText(item.product || "");
+    const key = normalizeSearch(product);
+    if (key && !products.has(key)) products.set(key, product);
+  });
+  return Array.from(products.values()).sort((a, b) => a.localeCompare(b, "pt-BR"));
+}
+
 function sellerReportData() {
   const months = sellerReportMonths();
   const start = qs("#seller-report-start-filter")?.value || "";
   const end = qs("#seller-report-end-filter")?.value || "";
   const productFilter = normalizeSearch(qs("#seller-report-product-filter")?.value || "");
-  const productOptions = Array.from(new Set([
-    ...state.stock.map((item) => plainCustomerText(item.product || "")),
-    ...state.orders.flatMap((order) => orderItems(order).map((item) => plainCustomerText(item.product || "")))
-  ].filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
-  const productOptionsList = qs("#seller-report-product-options");
-  if (productOptionsList) {
-    productOptionsList.innerHTML = productOptions.map((product) => `<option value="${escapeAttr(product)}"></option>`).join("");
+  const productOptions = registeredProductNames();
+  const productSelect = qs("#seller-report-product-filter");
+  if (productSelect) {
+    const currentProduct = productSelect.value || "";
+    productSelect.innerHTML = [
+      `<option value="">Todos os produtos</option>`,
+      ...productOptions.map((product) => `<option value="${escapeAttr(product)}">${escapeHtml(product)}</option>`)
+    ].join("");
+    productSelect.value = productOptions.find((product) => normalizeSearch(product) === normalizeSearch(currentProduct)) || "";
   }
   const reportOrders = state.orders
     .filter((order) => !start || String(order.date || "") >= start)
@@ -4511,7 +4536,7 @@ function sellerReportData() {
       if (!productFilter) {
         return { ...order, reportQty: Number(order.qty || 0), reportValue: Number(order.value || 0) };
       }
-      const matchingItems = orderItems(order).filter((item) => normalizeSearch(item.product || "").includes(productFilter));
+      const matchingItems = orderItems(order).filter((item) => normalizeSearch(item.product || "") === productFilter);
       if (!matchingItems.length) return null;
       return {
         ...order,
@@ -4614,7 +4639,7 @@ function salesCompositionRows(indicator = activeSalesCompositionIndicator) {
   return salesReportFilteredOrders()
     .filter((order) => monthKeys.has(String(order.date || "").slice(0, 7)))
     .filter((order) => (order.pickupOrder === true) === config.pickup)
-    .flatMap((order) => orderItems(order).map((item) => {
+    .flatMap((order) => (order.reportItems || orderItems(order)).map((item) => {
       const qty = Number(item.qty || 0);
       const value = Number(item.value || qty * Number(item.price || 0) || 0);
       return {
@@ -4640,7 +4665,7 @@ function filteredSalesCompositionRows(indicator = activeSalesCompositionIndicato
     if (end && row.date > end) return false;
     if (order && !normalizeSearch(row.orderId).includes(order)) return false;
     if (customer && !normalizeSearch(row.customer).includes(customer)) return false;
-    if (product && !normalizeSearch(row.product).includes(product)) return false;
+    if (product && normalizeSearch(row.product) !== product) return false;
     return true;
   });
 }
@@ -4653,6 +4678,16 @@ function renderSalesComposition(indicator = activeSalesCompositionIndicator) {
     return;
   }
   activeSalesCompositionIndicator = indicator;
+  const productSelect = qs("#sales-composition-product-filter");
+  if (productSelect) {
+    const currentProduct = productSelect.value || "";
+    const products = registeredProductNames();
+    productSelect.innerHTML = [
+      `<option value="">Todos os produtos</option>`,
+      ...products.map((product) => `<option value="${escapeAttr(product)}">${escapeHtml(product)}</option>`)
+    ].join("");
+    productSelect.value = products.find((product) => normalizeSearch(product) === normalizeSearch(currentProduct)) || "";
+  }
   const rows = filteredSalesCompositionRows(indicator);
   const totalQty = rows.reduce((sum, row) => sum + row.qty, 0);
   const totalValue = rows.reduce((sum, row) => sum + row.value, 0);
@@ -4767,6 +4802,16 @@ function reportSellerLabel(salesperson) {
 }
 
 function renderSalesReport() {
+  const productSelect = qs("#sales-report-product-filter");
+  if (productSelect) {
+    const currentProduct = productSelect.value || "";
+    const products = registeredProductNames();
+    productSelect.innerHTML = [
+      `<option value="">Todos os produtos</option>`,
+      ...products.map((product) => `<option value="${escapeAttr(product)}">${escapeHtml(product)}</option>`)
+    ].join("");
+    productSelect.value = products.find((product) => normalizeSearch(product) === normalizeSearch(currentProduct)) || "";
+  }
   const selectedSellerFilter = qs("#sales-report-seller-filter")?.value || "";
   const sellerFilter = selectedSellerFilter ? reportSellerKey(selectedSellerFilter) : "";
   const sellerGroups = new Map();
@@ -4954,7 +4999,7 @@ function weightedAverageOrders() {
     .filter((row) => !startFilter || row.date >= startFilter)
     .filter((row) => !endFilter || row.date <= endFilter)
     .filter((row) => !cityFilter || normalizeSearch(row.city).includes(cityFilter))
-    .filter((row) => !productFilters.length || productFilters.some((productFilter) => normalizeSearch(row.product).includes(productFilter)));
+    .filter((row) => !productFilters.length || productFilters.some((productFilter) => normalizeSearch(row.product) === productFilter));
 }
 
 function renderWeightedFilterOptions() {
@@ -4971,11 +5016,7 @@ function renderWeightedFilterOptions() {
 }
 
 function weightedFilterProducts() {
-  return Array.from(new Set(state.orders
-    .filter((order) => order.pickupOrder !== true)
-    .flatMap((order) => orderItems(order).map((item) => item.product || order.product || ""))
-    .filter(Boolean)))
-    .sort((a, b) => a.localeCompare(b, "pt-BR"));
+  return registeredProductNames();
 }
 
 function renderWeightedProductOptions(showAll = false) {
@@ -9855,6 +9896,7 @@ function bindEvents() {
     qs("#sales-composition-panel").hidden = true;
   });
   qs("#export-sales-report").addEventListener("click", exportSalesReportExcel);
+  qs("#sales-report-product-filter").addEventListener("change", renderSalesReport);
   qs("#export-seller-report").addEventListener("click", exportSellerReportExcel);
   ["#seller-report-start-filter", "#seller-report-end-filter", "#seller-report-product-filter"].forEach((selector) => {
     qs(selector).addEventListener("input", renderSellerReport);
