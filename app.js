@@ -788,6 +788,35 @@ function mergeLatestUpdatedObjectArray(remoteItems, localItems, keyFn) {
   return Array.from(map.values());
 }
 
+function mergeLatestCustomerArray(remoteItems, localItems) {
+  const customerKey = (item) => cleanDocument(item?.document) || normalizeSearch(item?.name);
+  const sources = new Map();
+  [...(remoteItems || []), ...(localItems || [])].forEach((customer) => {
+    if (!customer) return;
+    const key = customerKey(customer);
+    if (!key) return;
+    if (!sources.has(key)) sources.set(key, []);
+    sources.get(key).push(customer);
+  });
+  return mergeLatestUpdatedObjectArray(remoteItems, localItems, customerKey).map((customer) => {
+    const candidates = (sources.get(customerKey(customer)) || [])
+      .slice()
+      .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+    const preservedValue = (field) => {
+      const current = plainCustomerText(customer[field] || "");
+      if (current) return current;
+      const previous = candidates.find((item) => plainCustomerText(item[field] || ""));
+      return previous ? plainCustomerText(previous[field]) : "";
+    };
+    return {
+      ...customer,
+      salesperson: preservedValue("salesperson"),
+      payment: preservedValue("payment"),
+      paymentTerm: preservedValue("paymentTerm")
+    };
+  });
+}
+
 function sellerCityKey(rule) {
   return `${normalizeSearch(rule?.city || "")}|${normalizeSearch(rule?.uf || "MG")}`;
 }
@@ -808,7 +837,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.stock = (merged.stock || []).filter((product) => !isDeletedProduct(product, merged.deletedProductKeys));
   merged.deletedCustomerKeys = mergePrimitiveArray(remoteState?.deletedCustomerKeys, localState?.deletedCustomerKeys, (value) => cleanDocument(value) || normalizeSearch(value));
   const deletedCustomerKeys = new Set(merged.deletedCustomerKeys || []);
-  merged.customers = mergeLatestUpdatedObjectArray(remoteState?.customers, localState?.customers, (item) => cleanDocument(item.document) || normalizeSearch(item.name))
+  merged.customers = mergeLatestCustomerArray(remoteState?.customers, localState?.customers)
     .filter((customer) => !deletedCustomerKeys.has(cleanDocument(customer.document) || normalizeSearch(customer.name)));
   merged.receivables = mergeLatestUpdatedObjectArray(remoteState?.receivables, localState?.receivables, (item) => item.id || `${item.origin || ""}-${item.installment || ""}-${item.dueDate || ""}`);
   const activeOrderIds = new Set((merged.orders || []).map((order) => order.id).filter(Boolean));
