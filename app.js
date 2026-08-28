@@ -48,6 +48,7 @@ let firebaseReady = false;
 let firebaseLoginInProgress = false;
 let currentSessionUser = null;
 let lastCloudError = "";
+let localStateStorageWarningShown = false;
 const stockLocations = ["Divinopolis", "Arcos"];
 const cloudChunkSize = 120000;
 
@@ -245,7 +246,7 @@ function applyInitialFreightRatesIfNeeded() {
   addRates("entrega", initialDeliveryFreightRates);
   addRates("retorno", initialReturnFreightRates);
   state.freightRatesImportVersion = freightRatesImportVersion;
-  localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+  persistStateLocally();
 }
 
 function importCustomerBatchIfNeeded() {
@@ -269,7 +270,7 @@ function importCustomerBatchIfNeeded() {
     });
   });
   state.customerBatchImportVersion = customerBatchImportVersion;
-  localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+  persistStateLocally();
   return true;
 }
 
@@ -456,7 +457,7 @@ if (state.paymentRules.some((rule) => rule.type === "customer")) {
   state.paymentRules = state.paymentRules.filter((rule) => rule.type !== "customer");
 }
 if (customersTextNormalized) {
-  localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+  persistStateLocally();
 }
 state.receivables.forEach((receivable, index) => {
   const order = state.orders.find((item) => item.id === receivable.origin);
@@ -495,7 +496,7 @@ state.stock.forEach((item) => {
   item.qty = stockLocations.reduce((sum, location) => sum + item.locations[location], 0);
 });
 if (cleanupDuplicateImportedStockEntries()) {
-  localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+  persistStateLocally();
 }
 
 const sampleXml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -557,8 +558,24 @@ function makeId(value) {
   return `${base || "item"}-${Date.now().toString().slice(-5)}`;
 }
 
+function persistStateLocally() {
+  try {
+    localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+    return true;
+  } catch (error) {
+    console.warn("Cache local nao foi atualizado; o Firebase continua sendo a base oficial.", error);
+    if (!localStateStorageWarningShown) {
+      localStateStorageWarningShown = true;
+      window.setTimeout(() => {
+        if (qs("#toast")) showToast("Armazenamento local cheio. Os dados continuam sendo enviados ao Firebase.");
+      }, 0);
+    }
+    return false;
+  }
+}
+
 function saveState() {
-  localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+  persistStateLocally();
   cloudLocalMutationVersion += 1;
   cloudPendingLocalChanges = true;
   saveStateToCloud();
@@ -884,7 +901,7 @@ async function mergeLatestCloudStateBeforeSave() {
   const latestCloud = await readCloudState();
   if (!latestCloud.exists || !latestCloud.state) return;
   replaceStateContents(mergeCloudAndLocalState(latestCloud.state, localSnapshot));
-  localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+  persistStateLocally();
 }
 
 function applyCloudStateWithLocalBackup(cloudState, _localState) {
@@ -976,7 +993,7 @@ async function initFirebaseSync() {
     if (cloudStateResult.exists && cloudStateResult.state) {
       applyingCloudState = true;
       const cleanedCloudState = applyCloudStateWithLocalBackup(cloudStateResult.state);
-      localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+      persistStateLocally();
       renderAll();
       applyingCloudState = false;
       if (cleanedCloudState) persistCleanedCloudState();
@@ -994,7 +1011,7 @@ async function initFirebaseSync() {
       if (!liveCloudState.state) return;
       applyingCloudState = true;
       const cleanedLiveState = applyMergedCloudState(liveCloudState.state, true);
-      localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+      persistStateLocally();
       renderAll();
       applyingCloudState = false;
       if (cleanedLiveState) persistCleanedCloudState();
@@ -6808,7 +6825,7 @@ function applyDefaultSellerCitiesIfNeeded() {
   });
   state.defaultSellerCitiesExistingReport = existingCities;
   state.defaultSellerCitiesVersion = version;
-  localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+  persistStateLocally();
   return true;
 }
 
@@ -6837,7 +6854,7 @@ function restoreDouglasSellerCitiesFromCustomers() {
     added += 1;
   });
   state.douglasSellerCitiesVersion = version;
-  if (added) localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+  if (added) persistStateLocally();
   return added > 0;
 }
 
@@ -6934,7 +6951,7 @@ function applyDefaultPaymentRulesIfNeeded() {
   upsertPaymentRule("city", "Divinopolis", "Boleto", "15");
   upsertPaymentRule("seller", "Edmilson", "Boleto", "21/28/35");
   state.defaultPaymentRulesVersion = version;
-  localStorage.setItem("cimentoGestorState", JSON.stringify(state));
+  persistStateLocally();
   return true;
 }
 
