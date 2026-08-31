@@ -1418,8 +1418,25 @@ async function createAccessUser(name, email, password, role) {
     showToast("Usuário cadastrado com sucesso.");
     return true;
   } catch (error) {
+    if (error?.code === "auth/email-already-in-use") {
+      users.push({
+        user: userKey,
+        email: cleanEmail,
+        name: String(name || "").trim() || userKey,
+        role: String(role || "").trim() || "Usuario",
+        permissions: defaultPermissions(),
+        updatedAt: new Date().toISOString()
+      });
+      const cloudSaved = await saveUsersConfig();
+      renderUsersSettings();
+      if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+        showCloudError("O login já existe, mas o vínculo das permissões ainda não foi confirmado pelo Firebase.");
+        return true;
+      }
+      showToast("Login existente vinculado aos acessos. Defina e salve as permissões.");
+      return true;
+    }
     const messages = {
-      "auth/email-already-in-use": "Este e-mail já possui acesso no Firebase.",
       "auth/invalid-email": "O e-mail informado é inválido.",
       "auth/weak-password": "A senha deve possuir pelo menos 6 caracteres.",
       "auth/operation-not-allowed": "O cadastro por e-mail e senha não está habilitado no Firebase."
