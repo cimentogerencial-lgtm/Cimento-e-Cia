@@ -84,9 +84,31 @@ const permissionModules = [
 
 function defaultPermissions() {
   return permissionModules.reduce((permissions, module) => {
+    permissions[module.id] = false;
+    return permissions;
+  }, {});
+}
+
+function fullPermissions() {
+  return permissionModules.reduce((permissions, module) => {
     permissions[module.id] = true;
     return permissions;
   }, {});
+}
+
+function isAdministratorUser(user) {
+  const role = normalizeSearch(user?.role || "");
+  return ["gestao", "gerencia", "administrador", "admin"].includes(role);
+}
+
+function permissionsForUser(user, savedPermissions = user?.permissions) {
+  if (isAdministratorUser(user)) return fullPermissions();
+  const base = defaultPermissions();
+  const saved = savedPermissions && typeof savedPermissions === "object" ? savedPermissions : {};
+  permissionModules.forEach((module) => {
+    if (typeof saved[module.id] === "boolean") base[module.id] = saved[module.id];
+  });
+  return base;
 }
 
 function serializeUsersConfig() {
@@ -95,7 +117,8 @@ function serializeUsersConfig() {
     email: item.email || "",
     name: item.name,
     role: item.role || "Usuario",
-    permissions: item.permissions || defaultPermissions()
+    permissions: permissionsForUser(item),
+    updatedAt: item.updatedAt || ""
   }));
 }
 
@@ -108,7 +131,8 @@ function applyUsersConfig(savedUsers) {
       email: saved.email || "",
       name: saved.name || saved.user,
       role: saved.role || "Usuario",
-      permissions: { ...defaultPermissions(), ...(saved.permissions || {}) }
+      permissions: permissionsForUser(saved, saved.permissions),
+      updatedAt: saved.updatedAt || ""
     });
   });
   users.forEach((user) => {
@@ -116,7 +140,8 @@ function applyUsersConfig(savedUsers) {
     if (saved?.name) user.name = saved.name;
     if (saved?.email) user.email = saved.email;
     if (saved?.role) user.role = saved.role;
-    user.permissions = { ...defaultPermissions(), ...(saved?.permissions || {}) };
+    if (saved?.updatedAt) user.updatedAt = saved.updatedAt;
+    user.permissions = permissionsForUser(user, saved?.permissions);
   });
 }
 
@@ -148,7 +173,7 @@ if (savedUsers) {
   applyUsersConfig(savedUsers);
 }
 users.forEach((user) => {
-  user.permissions = { ...defaultPermissions(), ...(user.permissions || {}) };
+  user.permissions = permissionsForUser(user);
 });
 
 const defaultPaymentMethods = [
@@ -847,7 +872,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
     if (!activeOrderIds.has(item.origin)) return false;
     return !localOrderIds.has(item.origin) || localReceivableIds.has(item.id);
   });
-  merged.usersConfig = mergeObjectArray(remoteState?.usersConfig, localState?.usersConfig, (item) => item.user || normalizeSearch(item.name));
+  merged.usersConfig = mergeLatestUpdatedObjectArray(remoteState?.usersConfig, localState?.usersConfig, (item) => item.user || normalizeSearch(item.name));
   merged.deletedSellerCityKeys = mergePrimitiveArray(remoteState?.deletedSellerCityKeys, localState?.deletedSellerCityKeys, (value) => String(value || "").trim());
   const deletedSellerCityKeys = new Set(merged.deletedSellerCityKeys || []);
   merged.sellerCities = mergeObjectArray(remoteState?.sellerCities, localState?.sellerCities, sellerCityKey)
@@ -919,6 +944,7 @@ function applyMergedCloudState(cloudState, shouldKeepLocalPendingChanges = false
   } else {
     syncUsersConfigToState();
   }
+  syncCurrentSessionPermissions();
   const cleanedDuplicateEntries = cleanupDuplicateImportedStockEntries();
   const normalizedStockProducts = normalizeStockProductsAndEntries();
   return cleanedDuplicateEntries || normalizedStockProducts || cleanedDeletedCustomers || cleanedSellerCities;
@@ -1125,7 +1151,7 @@ function clearCloudError() {
   if (banner) banner.remove();
 }
 
-function saveUsersConfig() {
+async function saveUsersConfig() {
   const activeUserConfig = currentSessionUser
     ? users.find((item) => item.user === currentSessionUser.user)
     : null;
@@ -1134,7 +1160,7 @@ function saveUsersConfig() {
       ...currentSessionUser,
       name: activeUserConfig.name,
       role: activeUserConfig.role,
-      permissions: { ...defaultPermissions(), ...(activeUserConfig.permissions || {}) }
+      permissions: permissionsForUser(activeUserConfig)
     };
     localStorage.setItem("cimentoGestorSession", JSON.stringify({
       user: currentSessionUser.user,
@@ -1144,9 +1170,13 @@ function saveUsersConfig() {
     }));
   }
   syncUsersConfigToState();
-  localStorage.setItem("cimentoGestorUsers", JSON.stringify(state.usersConfig));
+  try {
+    localStorage.setItem("cimentoGestorUsers", JSON.stringify(state.usersConfig));
+  } catch (error) {
+    console.warn("Não foi possível atualizar o cache local dos acessos.", error);
+  }
   saveState();
-  saveStateToCloudNow();
+  return saveStateToCloudNow();
 }
 
 function getLoggedUser() {
@@ -1156,7 +1186,7 @@ function getLoggedUser() {
     const savedConfig = users.find((item) => item.user === savedSession.user);
     currentSessionUser = {
       ...savedSession,
-      permissions: { ...defaultPermissions(), ...(savedConfig?.permissions || savedSession.permissions || {}) }
+      permissions: permissionsForUser(savedConfig || savedSession, savedConfig?.permissions || savedSession.permissions)
     };
     return currentSessionUser;
   }
@@ -1171,7 +1201,7 @@ function saveLoginSession(user) {
     user: user.user,
     name: user.name,
     role: user.role,
-    permissions: user.permissions || defaultPermissions()
+    permissions: permissionsForUser(user)
   }));
 }
 
@@ -1192,6 +1222,24 @@ function refreshCurrentUserLabel() {
   if (user && !document.body.classList.contains("login-active")) {
     showSystem(user);
   }
+}
+
+function syncCurrentSessionPermissions() {
+  if (!currentSessionUser?.user) return;
+  const activeUserConfig = users.find((item) => item.user === currentSessionUser.user);
+  if (!activeUserConfig) return;
+  currentSessionUser = {
+    ...currentSessionUser,
+    name: activeUserConfig.name,
+    role: activeUserConfig.role,
+    permissions: permissionsForUser(activeUserConfig)
+  };
+  try {
+    localStorage.setItem("cimentoGestorSession", JSON.stringify(currentSessionUser));
+  } catch (error) {
+    console.warn("Não foi possível atualizar a sessão local.", error);
+  }
+  if (!document.body.classList.contains("login-active")) showSystem(currentSessionUser);
 }
 
 function userProfileFromEmail(email) {
@@ -1347,10 +1395,15 @@ async function createAccessUser(name, email, password, role) {
       email: cleanEmail,
       name: String(name || "").trim() || userKey,
       role: String(role || "").trim() || "Usuario",
-      permissions: defaultPermissions()
+      permissions: defaultPermissions(),
+      updatedAt: new Date().toISOString()
     });
-    saveUsersConfig();
+    const cloudSaved = await saveUsersConfig();
     renderUsersSettings();
+    if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+      showCloudError("Usuário criado no login, mas as permissões ainda não foram confirmadas pelo Firebase.");
+      return true;
+    }
     showToast("Usuário cadastrado com sucesso.");
     return true;
   } catch (error) {
@@ -2153,7 +2206,7 @@ document.addEventListener("click", (event) => {
 }, true);
 
 function userPermissions(user) {
-  return { ...defaultPermissions(), ...(user?.permissions || {}) };
+  return permissionsForUser(user);
 }
 
 function canAccessView(user, viewId) {
@@ -10092,20 +10145,29 @@ function bindEvents() {
     button.disabled = false;
     if (created) event.currentTarget.reset();
   });
-  qs("#users-settings-table").addEventListener("click", (event) => {
+  qs("#users-settings-table").addEventListener("click", async (event) => {
     const button = event.target.closest("[data-save-user]");
     if (!button) return;
   const user = users.find((item) => item.user === button.dataset.saveUser);
   if (!user) return;
   const nameInput = qs(`[data-config-name="${user.user}"]`);
   const roleInput = qs(`[data-config-role="${user.user}"]`);
+  const wasAdministrator = isAdministratorUser(user);
   user.name = nameInput.value.trim() || user.user;
   user.role = roleInput?.value.trim() || "Usuario";
-  saveUsersConfig();
+  user.permissions = wasAdministrator && !isAdministratorUser(user)
+    ? defaultPermissions()
+    : permissionsForUser(user);
+  user.updatedAt = new Date().toISOString();
+  const cloudSaved = await saveUsersConfig();
   refreshCurrentUserLabel();
+  if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+    showCloudError(`Alteração do acesso de ${user.name} ainda não foi confirmada pelo Firebase.`);
+    return;
+  }
   showToast(`Acesso de ${user.name} salvo.`);
 });
-  qs("#user-permissions-table").addEventListener("click", (event) => {
+  qs("#user-permissions-table").addEventListener("click", async (event) => {
     const button = event.target.closest("[data-save-permissions]");
     if (!button) return;
     const user = users.find((item) => item.user === button.dataset.savePermissions);
@@ -10115,9 +10177,14 @@ function bindEvents() {
       const checkbox = qs(`[data-permission-user="${CSS.escape(user.user)}"][data-permission-view="${CSS.escape(module.id)}"]`);
       user.permissions[module.id] = Boolean(checkbox?.checked);
     });
-    saveUsersConfig();
+    user.updatedAt = new Date().toISOString();
+    const cloudSaved = await saveUsersConfig();
     refreshCurrentUserLabel();
     applyUserPermissions(getLoggedUser());
+    if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+      showCloudError(`Permissões de ${user.name} ainda não foram confirmadas pelo Firebase.`);
+      return;
+    }
     showToast(`Permissoes de ${user.name} salvas.`);
   });
   const bindPaymentMethodForm = (formSelector, inputSelector) => {
