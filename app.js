@@ -100,7 +100,10 @@ function isAdministratorUser(user) {
   const userKey = normalizeSearch(user?.user || "");
   const name = normalizeSearch(user?.name || "");
   const role = normalizeSearch(user?.role || "");
+  const email = String(user?.email || "").trim().toLowerCase();
   return userKey === "ana"
+    || userKey === "fiscal"
+    || email === "fiscal@cimentocompanhia.com.br"
     || name === "ana luisa"
     || ["gestao", "gerencia", "administrador", "admin"].includes(role);
 }
@@ -1247,14 +1250,18 @@ function syncCurrentSessionPermissions() {
 }
 
 function userProfileFromEmail(email) {
-  const login = String(email || "").split("@")[0].toLowerCase();
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const login = normalizedEmail.split("@")[0];
   const saved = users.find((item) => {
-    return item.user === login || normalizeSearch(item.name) === normalizeSearch(login);
+    return item.user === login
+      || String(item.email || "").trim().toLowerCase() === normalizedEmail
+      || normalizeSearch(item.name) === normalizeSearch(login);
   });
-  return saved || {
+  return saved ? { ...saved, email: normalizedEmail } : {
     user: login || email,
     name: saved?.name || login || email,
-    role: saved?.role || "Usuario"
+    role: saved?.role || "Usuario",
+    email: normalizedEmail
   };
 }
 
