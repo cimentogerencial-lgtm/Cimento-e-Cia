@@ -65,7 +65,7 @@ const users = [
   { user: "tiago", name: "Tiago", role: "Estoque" },
   { user: "laiz", name: "Laiz", role: "Financeiro" },
   { user: "juliana", name: "Juliana", role: "Logistica" },
-  { user: "miriam", name: "Miriam", role: "Gerencia" }
+  { user: "anderson", name: "Anderson", role: "Usuario" }
 ];
 
 const permissionModules = [
