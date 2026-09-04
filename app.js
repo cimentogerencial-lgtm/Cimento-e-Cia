@@ -203,6 +203,7 @@ const state = {
   deletedOrders: [],
   deletedProductKeys: [],
   deletedManualStockEntryIds: [],
+  deletedStockMovementKeys: [],
   deletedCustomerKeys: [],
   customers: [],
   receivables: [],
@@ -329,6 +330,7 @@ if (Array.isArray(state.usersConfig) && state.usersConfig.length) {
 state.deletedOrders = Array.isArray(state.deletedOrders) ? state.deletedOrders : [];
 state.deletedProductKeys = Array.isArray(state.deletedProductKeys) ? state.deletedProductKeys : [];
 state.deletedManualStockEntryIds = Array.isArray(state.deletedManualStockEntryIds) ? state.deletedManualStockEntryIds : [];
+state.deletedStockMovementKeys = Array.isArray(state.deletedStockMovementKeys) ? state.deletedStockMovementKeys : [];
 state.deletedCustomerKeys = Array.isArray(state.deletedCustomerKeys) ? state.deletedCustomerKeys : [];
 state.customers = (state.customers || []).filter((customer) => {
   const customerKey = cleanDocument(customer.document) || normalizeSearch(customer.name);
@@ -866,6 +868,7 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.orders = (merged.orders || []).filter((order) => !deletedOrderIds.has(order.id));
   merged.deletedProductKeys = mergePrimitiveArray(remoteState?.deletedProductKeys, localState?.deletedProductKeys, (value) => String(value || "").trim());
   merged.deletedManualStockEntryIds = mergePrimitiveArray(remoteState?.deletedManualStockEntryIds, localState?.deletedManualStockEntryIds, (value) => String(value || "").trim());
+  merged.deletedStockMovementKeys = mergePrimitiveArray(remoteState?.deletedStockMovementKeys, localState?.deletedStockMovementKeys, (value) => String(value || "").trim());
   merged.stock = (merged.stock || []).filter((product) => !isDeletedProduct(product, merged.deletedProductKeys));
   merged.deletedCustomerKeys = mergePrimitiveArray(remoteState?.deletedCustomerKeys, localState?.deletedCustomerKeys, (value) => cleanDocument(value) || normalizeSearch(value));
   const deletedCustomerKeys = new Set(merged.deletedCustomerKeys || []);
@@ -898,6 +901,8 @@ function mergeCloudAndLocalState(remoteState, localState) {
   merged.stockEntries = mergeLatestUpdatedObjectArray(remoteState?.stockEntries, localState?.stockEntries, (item) => item.id || `${item.invoice || ""}-${normalizeSearch(item.product)}-${normalizeLocation(item.location)}-${item.quantity || ""}-${item.date || ""}`);
   merged.stockEntries = (merged.stockEntries || []).filter((entry) => !isDeletedManualStockEntry(entry, merged.deletedManualStockEntryIds));
   merged.movements = mergeObjectArray(remoteState?.movements, localState?.movements, (item) => item.id || item.sourceId || `${item.sourceInvoice || ""}-${item.allocationId || ""}-${item.date || ""}-${normalizeSearch(item.op)}-${normalizeSearch(item.product)}-${item.qty || ""}`);
+  const deletedStockMovementKeys = new Set(merged.deletedStockMovementKeys || []);
+  merged.movements = (merged.movements || []).filter((item) => !deletedStockMovementKeys.has(stockMovementSyncKey(item)));
   merged.salespeople = mergePrimitiveArray(remoteState?.salespeople, localState?.salespeople, (value) => normalizeSearch(value));
   merged.drivers = mergePrimitiveArray(remoteState?.drivers, localState?.drivers, (value) => cleanDriverName(value));
   merged.paymentMethods = mergePrimitiveArray(remoteState?.paymentMethods, localState?.paymentMethods, (value) => {
@@ -2105,7 +2110,7 @@ function manualStockEntryDeleteKey(entry) {
 }
 
 function isDeletedManualStockEntry(entry, deletedKeys = state.deletedManualStockEntryIds) {
-  if (!entry?.movementType) return false;
+  if (!entry) return false;
   const deletedSet = new Set(Array.isArray(deletedKeys) ? deletedKeys : []);
   return deletedSet.has(entry.id) || deletedSet.has(manualStockEntryDeleteKey(entry));
 }
@@ -6000,7 +6005,11 @@ function deleteManualStockMovement(entryId) {
   showToast("Lançamento excluído e saldo estornado.");
 }
 
-function handleStockAdjustment(event) {
+function stockMovementSyncKey(item) {
+  return item?.id || item?.sourceId || `${item?.sourceInvoice || ""}-${item?.allocationId || ""}-${item?.date || ""}-${normalizeSearch(item?.op)}-${normalizeSearch(item?.product)}-${item?.qty || ""}`;
+}
+
+async function handleStockAdjustment(event) {
   event.preventDefault();
   const productId = qs("#adjust-stock-product").value;
   const product = state.stock.find((item) => item.id === productId);
@@ -6012,6 +6021,7 @@ function handleStockAdjustment(event) {
   const origin = normalizeLocation(qs("#adjust-stock-origin").value);
   const destination = normalizeLocation(qs("#adjust-stock-destination").value);
   const quantity = Number(qs("#adjust-stock-quantity").value || 0);
+  const transferDate = qs("#adjust-stock-date").value || today;
   const reason = qs("#adjust-stock-reason").value.trim() || "Transferencia entre unidades";
   if (quantity <= 0) {
     showToast("Informe uma quantidade maior que zero.");
@@ -6021,7 +6031,7 @@ function handleStockAdjustment(event) {
     showToast("A origem e o destino precisam ser diferentes.");
     return;
   }
-  if (!assertStockDateUnlocked(today, "salvar transferencia de estoque")) return;
+  if (!assertStockDateUnlocked(transferDate, "salvar transferencia de estoque")) return;
 
   if (Number(product.locations?.[origin] || 0) < quantity) {
     showToast("Saldo insuficiente na unidade de origem para fazer a transferencia.");
@@ -6035,7 +6045,7 @@ function handleStockAdjustment(event) {
   state.stockEntries.unshift(
     {
       id: `ENT-${document}-DEST-${Math.random().toString(16).slice(2, 6)}`,
-      date: today,
+      date: transferDate,
       invoice: document,
       factoryOrder: reason,
       product: product.product,
@@ -6047,7 +6057,7 @@ function handleStockAdjustment(event) {
     },
     {
       id: `ENT-${document}-ORIG-${Math.random().toString(16).slice(2, 6)}`,
-      date: today,
+      date: transferDate,
       invoice: document,
       factoryOrder: reason,
       product: product.product,
@@ -6059,17 +6069,23 @@ function handleStockAdjustment(event) {
     }
   );
   state.movements.unshift({
-    date: today,
+    date: transferDate,
+    sourceInvoice: document,
     op: `Transferencia ${origin} para ${destination}`,
     product: product.product,
     qty: quantity
   });
 
   qs("#stock-adjustment-form").reset();
+  qs("#adjust-stock-date").value = today;
   qs("#stock-adjustment-panel").hidden = true;
   saveState();
-  saveStateToCloudNow();
+  const cloudSaved = await saveStateToCloudNow();
   renderAll();
+  if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+    showCloudError("A transferencia foi registrada localmente, mas ainda nao foi confirmada pelo Firebase.");
+    return;
+  }
   showToast("Transferencia de estoque salva.");
 }
 
@@ -9064,7 +9080,7 @@ function reverseStockEntryWarehouseDestination(entryId) {
   showToast(`Estorno realizado. NF ${entry.invoice} voltou para entradas disponiveis.`);
 }
 
-function reverseStockTransfer(documentNumber) {
+async function reverseStockTransfer(documentNumber) {
   const transferEntries = state.stockEntries.filter((entry) => entry.invoice === documentNumber);
   if (transferEntries.length < 2) {
     showToast("Transferencia nao encontrada para estorno.");
@@ -9099,19 +9115,34 @@ function reverseStockTransfer(documentNumber) {
     changeProductLocationQty(product, destination, -quantity);
     changeProductLocationQty(product, origin, quantity);
   }
+  state.deletedManualStockEntryIds = Array.isArray(state.deletedManualStockEntryIds) ? state.deletedManualStockEntryIds : [];
+  transferEntries.forEach((entry) => {
+    if (entry.id && !state.deletedManualStockEntryIds.includes(entry.id)) state.deletedManualStockEntryIds.push(entry.id);
+  });
   state.stockEntries = state.stockEntries.filter((entry) => entry.invoice !== documentNumber);
-  state.movements = state.movements.filter((movement) => !(
+  const transferMovements = state.movements.filter((movement) => (
     normalizeSearch(movement.op).includes("transferencia")
     && normalizeSearch(movement.op).includes(normalizeSearch(origin))
     && normalizeSearch(movement.op).includes(normalizeSearch(destination))
     && normalizeSearch(movement.product) === normalizeSearch(destinationEntry.product)
     && Number(movement.qty || 0) === quantity
   ));
+  state.deletedStockMovementKeys = Array.isArray(state.deletedStockMovementKeys) ? state.deletedStockMovementKeys : [];
+  transferMovements.forEach((movement) => {
+    const key = stockMovementSyncKey(movement);
+    if (key && !state.deletedStockMovementKeys.includes(key)) state.deletedStockMovementKeys.push(key);
+  });
+  const deletedMovementKeys = new Set(state.deletedStockMovementKeys);
+  state.movements = state.movements.filter((movement) => !deletedMovementKeys.has(stockMovementSyncKey(movement)));
 
   saveState();
-  saveStateToCloudNow();
+  const cloudSaved = await saveStateToCloudNow();
   renderAll();
   if (selectedStockProductId) renderStockLedger(selectedStockProductId);
+  if (window.CIMENTO_FIREBASE?.enabled && !cloudSaved) {
+    showCloudError(`A transferencia ${documentNumber} foi estornada localmente, mas ainda nao foi confirmada pelo Firebase.`);
+    return;
+  }
   showToast(`Transferencia ${documentNumber} estornada.`);
 }
 
@@ -10108,6 +10139,7 @@ function bindEvents() {
   qs("#new-sale-btn").addEventListener("click", () => qs('[data-view="pedidos"]').click());
   qs("#adjust-stock-btn").addEventListener("click", () => {
     renderStockAdjustmentOptions();
+    qs("#adjust-stock-date").value = qs("#adjust-stock-date").value || today;
     qs("#manual-stock-panel").hidden = true;
     qs("#stock-adjustment-panel").hidden = !qs("#stock-adjustment-panel").hidden;
   });
@@ -10124,6 +10156,7 @@ function bindEvents() {
   qs("#stock-adjustment-form").addEventListener("submit", handleStockAdjustment);
   qs("#cancel-stock-adjustment").addEventListener("click", () => {
     qs("#stock-adjustment-form").reset();
+    qs("#adjust-stock-date").value = today;
     qs("#stock-adjustment-panel").hidden = true;
   });
   qs("#add-stock-btn").addEventListener("click", () => {
